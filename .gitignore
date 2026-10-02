@@ -1,0 +1,33 @@
+# Python / FastAPI
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+
+# Node / React
+node_modules/
+dist/
+build/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE configurations
+.vscode/
+.idea/
+
+# Test and tool artifacts
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.DS_Store

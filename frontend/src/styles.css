@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+:root { font-family: var(--font-sans); color-scheme: dark; font-synthesis: none; -webkit-font-smoothing: antialiased; }
+body { margin: 0; min-width: 320px; }
+button, a, select { -webkit-tap-highlight-color: transparent; }
+button, select { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 4px; }
+::selection { background: #4338ca; color: white; }
+
+@layer components {
+  .panel { @apply rounded-xl border border-white/8 bg-[#111a35]; }
+  .primary-button { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200/40 bg-[#4f46e5] px-4 py-2 text-xs font-semibold text-[#ffffff] transition-colors hover:bg-[#6366f1]; }
+  .secondary-button { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/3 px-3 py-2 text-xs text-zinc-300 hover:bg-white/5; }
+  .form-input { @apply mt-2 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-zinc-100; }
+}
