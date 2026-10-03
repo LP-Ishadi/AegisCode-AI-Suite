@@ -14,7 +14,7 @@ backend/
     database/      # Stateless Supabase clients
     models/        # Validated scan/finding/review contracts
     services/      # Semgrep and AI stubs
-    workers/       # Optional Celery bootstrap
+    workers/       # Durable scan worker and optional Celery bootstrap
     main.py
   tests/
   Dockerfile
@@ -121,18 +121,25 @@ See [Supabase's implicit-flow documentation](https://supabase.com/docs/guides/au
 | `GET /api/v1/repos?limit=25&offset=0` | Bounded, tenant-scoped repository reads |
 | `POST /api/v1/webhooks/github` | Verify signature and delivery ID; answer signed pings |
 
-Actionable PR webhooks return **501** until durable dispatch is implemented. Missing
-webhook configuration returns 503. Set the GitHub secret to the same random value
-as `GITHUB_WEBHOOK_SECRET`. Scanner/AI stubs raise unavailable errors; adding keys
-does not enable these services. Managed Redis is optional until workers are implemented.
+Actionable PR webhooks now atomically enqueue scans in Supabase and return **202**;
+duplicates return **200**. Missing queue configuration/migration returns **503**.
+Apply the additional dispatch migration, provision trusted repository/installation
+mappings, and run the separate worker as described in
+[Durable scan dispatch](docs/scan-dispatch.md).
+
+The worker has lease recovery, bounded retries and atomic scan/finding updates.
+GitHub source acquisition and AI analysis are still adapter stubs; the default worker
+marks scans failed with `adapter_unavailable`, never falsely clean. Redis is not needed
+for the active Postgres queue. Keep the worker stopped to retain queued jobs until
+adapters are configured.
 
 ## Verification
 
 For local GitHub webhook testing, follow [the Ngrok setup guide](docs/local-webhooks.md).
 It covers the shared secret, `ngrok http 8000`, GitHub App permissions, delivery
 inspection, and the signed-request helper at `backend/scripts/send_test_webhook.py`.
-No deployment is required. Valid PR events currently return 501 until durable
-dispatch is implemented; signed pings return 200.
+No deployment is required. Valid mapped PR events return 202 after durable enqueue;
+duplicates and signed pings return 200.
 
 ```sh
 cd backend

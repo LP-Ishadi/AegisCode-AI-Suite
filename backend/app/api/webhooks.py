@@ -1,17 +1,25 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.security import verify_webhook_signature
+from app.models.dispatch import PRDispatchEvent
 from app.models.schemas import PullRequestWebhook
+from app.services.dispatch_service import (
+    DispatchService,
+    DispatchUnavailable,
+    RepositoryNotConnected,
+)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
 @router.post("/github")
-async def github_webhook(request: Request) -> dict[str, str]:
+async def github_webhook(request: Request):
     settings = get_settings()
     if not settings.github_webhook_secret:
         raise HTTPException(503, "Webhook receiver is not configured")
@@ -27,7 +35,7 @@ async def github_webhook(request: Request) -> dict[str, str]:
     ):
         raise HTTPException(401, "Invalid webhook signature")
     try:
-        UUID(request.headers.get("x-github-delivery", ""))
+        delivery_id = UUID(request.headers.get("x-github-delivery", ""))
     except ValueError as exc:
         raise HTTPException(400, "Valid delivery ID required") from exc
     event = request.headers.get("x-github-event")
@@ -42,8 +50,20 @@ async def github_webhook(request: Request) -> dict[str, str]:
     except ValidationError as exc:
         # Do not echo signed payloads, source code, or secrets in error details.
         raise HTTPException(422, "Invalid pull request payload") from exc
-    if payload.action not in {"opened", "reopened", "synchronize", "ready_for_review"}:
+    merged = payload.action == "closed" and payload.pull_request.merged
+    if (
+        payload.action not in {"opened", "reopened", "synchronize", "ready_for_review"}
+        and not merged
+    ):
         return {"status": "ignored"}
-    # Implement atomic delivery deduplication + durable outbox in Supabase before
-    # returning 202. Do not acknowledge work that has not actually been persisted.
-    raise HTTPException(501, "Durable scan dispatch is not implemented")
+    try:
+        event = PRDispatchEvent.model_validate_json(bytes(body))
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid scan dispatch metadata") from exc
+    try:
+        result = await run_in_threadpool(DispatchService().enqueue, delivery_id, event)
+    except RepositoryNotConnected as exc:
+        raise HTTPException(403, "Repository installation is not connected") from exc
+    except DispatchUnavailable as exc:
+        raise HTTPException(503, "Durable scan queue unavailable; redeliver this event") from exc
+    return JSONResponse(status_code=202 if result["status"] == "queued" else 200, content=result)

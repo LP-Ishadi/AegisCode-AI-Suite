@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import hmac
-import json
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -86,22 +85,16 @@ def test_invalid_signed_payload_is_redacted(client):
     assert "do-not-echo" not in response.text
 
 
-def test_scan_webhook_never_falsely_acknowledged(client):
-    body = json.dumps(
-        {
-            "action": "opened",
-            "repository": {"id": 123, "full_name": "acme/api"},
-            "pull_request": {"number": 12, "head": {"sha": "a" * 40}},
-        }
-    ).encode()
-    assert (
-        client.post(
-            "/api/v1/webhooks/github",
-            content=body,
-            headers=signed_headers(body),
-        ).status_code
-        == 501
-    )
+def test_scan_webhook_never_falsely_acknowledged(client, monkeypatch):
+    from app.services.dispatch_service import DispatchUnavailable
+    from scripts.send_test_webhook import build_request
+
+    def unavailable(*args):
+        raise DispatchUnavailable
+
+    monkeypatch.setattr("app.api.webhooks.DispatchService.enqueue", unavailable)
+    body, headers = build_request("pull_request", SECRET)
+    assert client.post("/api/v1/webhooks/github", content=body, headers=headers).status_code == 503
 
 
 def test_rejected_cors_origin(client):
@@ -210,10 +203,14 @@ def test_user_database_client_never_uses_service_key(monkeypatch):
     [
         ("ping", False, 200),
         ("ping", True, 401),
-        ("pull_request", False, 501),
+        ("pull_request", False, 202),
     ],
 )
-def test_helper_requests_through_forwarded_host(client, event, tamper, expected):
+def test_helper_requests_through_forwarded_host(client, monkeypatch, event, tamper, expected):
+    monkeypatch.setattr(
+        "app.api.webhooks.DispatchService.enqueue",
+        lambda *args: {"status": "queued", "scan_id": DELIVERY},
+    )
     from scripts.send_test_webhook import build_request
 
     body, headers = build_request(event, SECRET, tamper)
