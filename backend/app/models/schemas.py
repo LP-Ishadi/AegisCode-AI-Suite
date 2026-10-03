@@ -55,6 +55,7 @@ class GitHubHead(BaseModel):
 class GitHubPullRequest(BaseModel):
     number: int = Field(gt=0)
     head: GitHubHead
+    merged: bool = False
 
 
 class PullRequestWebhook(BaseModel):

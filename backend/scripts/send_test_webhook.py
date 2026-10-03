@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -13,14 +14,30 @@ import httpx
 from dotenv import dotenv_values
 
 
-def build_request(event: str, secret: str, tamper: bool = False) -> tuple[bytes, dict[str, str]]:
+def build_request(
+    event: str,
+    secret: str,
+    tamper: bool = False,
+    *,
+    repository_id: int = 1,
+    installation_id: int = 1,
+    repository: str = "aegis-test/example",
+) -> tuple[bytes, dict[str, str]]:
     payload = (
         {"zen": "AegisCode local webhook test"}
         if event == "ping"
         else {
             "action": "opened",
-            "repository": {"id": 1, "full_name": "aegis-test/example"},
-            "pull_request": {"number": 1, "head": {"sha": "a" * 40}},
+            "repository": {"id": repository_id, "full_name": repository},
+            "installation": {"id": installation_id},
+            "pull_request": {
+                "number": 1,
+                "title": "Synthetic webhook test",
+                "user": {"login": "test-user"},
+                "head": {"sha": "a" * 40, "ref": "feature"},
+                "base": {"sha": "b" * 40, "ref": "main"},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
         }
     )
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -40,6 +57,9 @@ def main() -> int:
     parser.add_argument("--url", default="http://127.0.0.1:8000/api/v1/webhooks/github")
     parser.add_argument("--event", choices=["ping", "pull_request"], default="ping")
     parser.add_argument("--tamper", action="store_true", help="Expect signature rejection (401)")
+    parser.add_argument("--repository-id", type=int, default=1)
+    parser.add_argument("--installation-id", type=int, default=1)
+    parser.add_argument("--repository", default="aegis-test/example")
     args = parser.parse_args()
     url = urlsplit(args.url)
     if (
@@ -58,7 +78,14 @@ def main() -> int:
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", values.get("GITHUB_WEBHOOK_SECRET"))
     if not secret or secret.startswith(("REPLACE_", "YOUR_")):
         parser.error("Set a real GITHUB_WEBHOOK_SECRET in the root .env or process environment")
-    body, headers = build_request(args.event, secret, args.tamper)
+    body, headers = build_request(
+        args.event,
+        secret,
+        args.tamper,
+        repository_id=args.repository_id,
+        installation_id=args.installation_id,
+        repository=args.repository,
+    )
     try:
         # Preserve the exact signed body; do not follow redirects to another host.
         response = httpx.post(
@@ -67,28 +94,32 @@ def main() -> int:
     except httpx.HTTPError:
         print("Request failed. Check the backend, tunnel URL, network, and TLS configuration.")
         return 1
-    expected = 401 if args.tamper else 200 if args.event == "ping" else 501
+    expected = 401 if args.tamper else 200 if args.event == "ping" else 202
     matches = response.status_code == expected
     if matches and expected == 200:
         try:
             matches = response.json() == {"status": "pong"}
         except ValueError:
             matches = False
-    if matches and expected in {401, 501}:
+    if expected == 401 and matches:
         try:
-            detail = (
-                "Invalid webhook signature"
-                if expected == 401
-                else "Durable scan dispatch is not implemented"
-            )
-            matches = response.json() == {"detail": detail}
+            matches = response.json() == {"detail": "Invalid webhook signature"}
         except ValueError:
             matches = False
-    print(f"{'PASS' if matches else 'FAIL'}: HTTP {response.status_code}; expected {expected}.")
-    if matches and expected == 501:
-        print(
-            "Signature and PR validation passed. Scan dispatch is not implemented; no scan queued."
-        )
+    if expected == 202:
+        try:
+            matches = response.status_code in {200, 202} and response.json().get("status") in {
+                "queued",
+                "duplicate",
+            }
+        except ValueError:
+            matches = False
+    print(
+        f"{'PASS' if matches else 'FAIL'}: HTTP {response.status_code}; "
+        f"expected {expected} (or 200 for a duplicate PR)."
+    )
+    if matches and expected == 202:
+        print("Durable scan job recorded; the worker processes it separately.")
     return 0 if matches else 1
 
 

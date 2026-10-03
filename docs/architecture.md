@@ -1,5 +1,10 @@
 # Architecture and documentation analysis
 
+> This document records the original foundation review. Durable Postgres dispatch,
+> installation mappings, deduplication, leases and worker status transitions are now
+> implemented; see [current dispatch architecture](scan-dispatch.md). The original
+> roadmap table and dotted queue paths below describe the initial scaffold.
+
 The six-page **Technical Documentation.pdf** was reviewed, including its embedded
 folder diagrams and Greptile dashboard reference. It specifies hybrid SAST/LLM
 review, React, FastAPI, Supabase Auth/Postgres/pgvector, and Celery/Redis. Its future

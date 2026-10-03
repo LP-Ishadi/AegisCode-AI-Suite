@@ -2,7 +2,8 @@
 
 Traffic flow: GitHub → HTTPS Ngrok URL → local FastAPI on port 8000 →
 `POST /api/v1/webhooks/github`. No deployed backend, frontend tunnel, Supabase
-schema changes, or CORS changes are required.
+CORS changes are required. PR dispatch requires the additional migration and repository
+installation mapping in [scan-dispatch.md](scan-dispatch.md); pings do not.
 
 The existing handler verifies HMAC-SHA256 over the **original request bytes** before
 processing events, uses a constant-time comparison, caps bodies at 1 MiB by default,
@@ -52,8 +53,11 @@ backend/.venv/bin/python backend/scripts/send_test_webhook.py --tamper
 backend/.venv/bin/python backend/scripts/send_test_webhook.py --event pull_request
 ```
 
-Expect PASS with 200/pong, 401, and 501 respectively. The last test verifies that a
-signed, valid PR reaches the current dispatch boundary; **it does not run a scan**.
+Expect PASS with 200/pong and 401 for the first two tests. The PR test now requires
+a provisioned test repository/installation mapping: add `--repository-id ID
+--installation-id ID --repository OWNER/REPO`. It returns 202 (or 200 for duplicate
+event revisions) only after a job is persisted. Default synthetic IDs are normally
+unmapped and return 403. The helper itself does not run a scan.
 The helper loads the root `.env` automatically (process environment takes priority),
 sends only synthetic data, and never prints the secret, signature or response body.
 
@@ -110,7 +114,9 @@ Supabase OAuth callback with this webhook URL.
 If you only want to test without registering a GitHub App, use the test repository's
 **Settings → Webhooks → Add webhook** instead. Use the same URL/secret, select
 `application/json`, enable SSL verification and Active, and select **Pull requests**.
-Configure one method to avoid duplicate deliveries.
+Repository webhooks can test signed pings, but PR dispatch requires a GitHub App
+installation ID and rejects repository-only PR payloads with 422. Use a GitHub App
+for end-to-end dispatch testing.
 
 See [GitHub App registration](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 
@@ -141,16 +147,17 @@ supplies them too; visiting the webhook endpoint in a browser sends GET and yiel
 | 400 | Missing event header or invalid delivery UUID |
 | 413 | Body exceeds `MAX_WEBHOOK_BYTES` |
 | 422 | Signed PR payload failed validation; use JSON content type |
-| 501 | Valid actionable PR reached the unimplemented durable dispatch boundary |
-| 503 | Backend webhook secret is not configured |
+| 202 | PR scan durably queued in Supabase |
+| 200, `duplicate` | Delivery/event revision already recorded |
+| 403 | Repository/installation mapping missing or mismatched |
+| 503 | Missing webhook secret, unavailable database or unapplied dispatch migration |
 | 404 / redirect | Check the complete path; use it without a trailing slash |
 | Ngrok error / 502 | Check agent, forwarding port and running backend |
 | HTML instead of JSON | Tunnel/interstitial/access policy response, not API success |
 
-**Current boundary:** ping verification is complete. Real actionable PR deliveries
-will show as failed (501) in GitHub until atomic receipt/outbox persistence and workers
-are implemented. This prevents falsely acknowledging dropped work. UUID validation
-is not deduplication; replay protection must be added with the durable dispatch layer.
-No source code is cloned, no findings are stored, and no PR comments are posted yet.
+**Current boundary:** queueing and worker lifecycle are implemented. Apply the
+[dispatch migration and setup](scan-dispatch.md) before PR tests. The worker's source
+and AI adapters remain stubs and fail explicitly until implemented. Duplicate receipts
+are handled durably in Supabase. No code is cloned or PR comments posted by the stubs.
 
 HMAC reference: [GitHub signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).

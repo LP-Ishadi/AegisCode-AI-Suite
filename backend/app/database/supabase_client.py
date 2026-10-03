@@ -24,12 +24,14 @@ def get_supabase_client(access_token: str | None = None) -> Client:
 
 
 def get_service_client() -> Client:
-    """Trusted workers only: this key bypasses RLS; never use in user routes."""
+    """Trusted workers/webhook RPCs only; never use in user-authenticated routes."""
     settings = get_settings()
     if not settings.supabase_url or not settings.supabase_service_key:
         raise RuntimeError("Supabase service credentials are not configured")
     return create_client(
         str(settings.supabase_url).rstrip("/"),
         settings.supabase_service_key.get_secret_value(),
-        options=ClientOptions(persist_session=False, auto_refresh_token=False),
+        options=ClientOptions(
+            persist_session=False, auto_refresh_token=False, postgrest_client_timeout=5
+        ),
     )
