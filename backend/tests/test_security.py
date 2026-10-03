@@ -203,3 +203,25 @@ def test_user_database_client_never_uses_service_key(monkeypatch):
     assert captured["key"] == "public-key"
     assert captured["options"].headers["Authorization"] == "Bearer user-jwt"
     assert captured["options"].persist_session is False
+
+
+@pytest.mark.parametrize(
+    "event,tamper,expected",
+    [
+        ("ping", False, 200),
+        ("ping", True, 401),
+        ("pull_request", False, 501),
+    ],
+)
+def test_helper_requests_through_forwarded_host(client, event, tamper, expected):
+    from scripts.send_test_webhook import build_request
+
+    body, headers = build_request(event, SECRET, tamper)
+    headers.update({"host": "example.ngrok-free.app", "x-forwarded-proto": "https"})
+    response = client.post("/api/v1/webhooks/github", content=body, headers=headers)
+    assert response.status_code == expected
+
+
+def test_signature_matches_github_reference_vector():
+    signature = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+    assert verify_webhook_signature(b"Hello, World!", signature, "It's a Secret to Everybody")
