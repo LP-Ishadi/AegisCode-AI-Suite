@@ -128,6 +128,12 @@ does not enable these services. Managed Redis is optional until workers are impl
 
 ## Verification
 
+For local GitHub webhook testing, follow [the Ngrok setup guide](docs/local-webhooks.md).
+It covers the shared secret, `ngrok http 8000`, GitHub App permissions, delivery
+inspection, and the signed-request helper at `backend/scripts/send_test_webhook.py`.
+No deployment is required. Valid PR events currently return 501 until durable
+dispatch is implemented; signed pings return 200.
+
 ```sh
 cd backend
 .venv/bin/ruff check .
