@@ -19,8 +19,7 @@
    ```
 
    For an existing repository, update its `github_installation_id` after verifying
-   ownership instead of inserting it again. Renamed/transferred repositories need
-   their trusted mapping updated. Unknown or mismatched installations return 403.
+   ownership instead of inserting it again. Update stored names after renames. Transfers require verified installation mapping. Unknown or mismatched installations return 403.
    Repository-only webhooks without `installation.id` cannot enqueue (422).
 3. Keep `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, and `GITHUB_WEBHOOK_SECRET` configured
    in the root `.env`. The verified webhook uses service-only RPCs; it never accepts
@@ -83,22 +82,12 @@ can be scanned for history without replacing the latest state. Prior findings ar
 resolved when superseded; here that flag means no longer active for the current revision,
 not independently verified remediation. Failed/queued scans must never imply a clean repo.
 
-`ScanPipeline` injects two asynchronous contracts:
-
-- `SourceProvider.fetch(ScanMetadata) → SourceBundle`: bounded in-memory diff and file
-  paths with matching immutable commit SHA. The default `GitHubSourceProvider` is a stub.
-- `ScanEngine.analyze(ScanMetadata, SourceBundle) → ScanResult`: validated findings plus
-  engine version. The default `AIScanEngine` is a stub ready for OpenAI/Claude integration.
-
-**The queue and worker are implemented; code acquisition and real AI analysis are not.**
-Running the default worker marks jobs `failed` with `adapter_unavailable`. It never emits
-fake clean results. Leave the worker stopped if you want jobs to remain queued until an
-adapter is implemented. Tests inject deterministic adapters to verify the success path.
-
-Before replacing stubs, add GitHub installation-token minting and ownership checks,
-response/time/expansion limits, immutable fork comparisons, secret redaction, tenant
-AI opt-in, budgets and validated model output. No code checkout, subprocess, source
-persistence, AI calls or GitHub comments happen with these stubs.
+`ScanPipeline` injects `SourceProvider.fetch(ScanMetadata) → SourceBundle` and
+`ScanEngine.analyze(ScanMetadata, SourceBundle) → ScanResult`. The defaults now use
+GitHub App installation tokens for bounded immutable comparisons and OpenAI structured
+outputs for diff review. Invalid/incomplete output fails explicitly. See
+[Live scan pipeline setup](live-scan-pipeline.md) for the additional migration, opt-in,
+credentials, verified repository connection command, limits and failure recovery.
 
 ## Verification
 
@@ -108,7 +97,7 @@ cd backend
 .venv/bin/pytest
 ```
 
-`supabase/tests/durable_scan_dispatch.sql` runs transactional queue checks after both
+`supabase/tests/durable_scan_dispatch.sql` runs transactional queue checks after all
 migrations in an otherwise empty **disposable test database**, then rolls back fixtures.
 Do not run it against a live queue: it invokes the global claim function. Use `psql -v
 ON_ERROR_STOP=1 -f supabase/tests/durable_scan_dispatch.sql` with your test database connection.

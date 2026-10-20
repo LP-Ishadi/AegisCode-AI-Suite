@@ -34,7 +34,9 @@ class DispatchService:
                 .data
             )
         except APIError as exc:
-            if exc.code == "42501":
+            if exc.code == "PT403" or (
+                exc.code == "42501" and exc.message == "Repository installation is not connected"
+            ):
                 raise RepositoryNotConnected from exc
             raise DispatchUnavailable from exc
         except (HTTPError, RuntimeError) as exc:

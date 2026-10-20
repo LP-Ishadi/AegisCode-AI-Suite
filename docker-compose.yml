@@ -1,0 +1,82 @@
+name: aegiscode
+
+# Compose reads the root .env for interpolation. Pass only each service's inputs;
+# never inject the full secret-bearing .env into the Vite or Ngrok containers.
+x-backend-environment: &backend-environment
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:5173"]}'
+  SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in the root .env}
+  SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?Set SUPABASE_ANON_KEY in the root .env}
+  SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?Set SUPABASE_SERVICE_KEY in the root .env}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET in the root .env}
+  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+  GITHUB_APP_PRIVATE_KEY_B64: ${GITHUB_APP_PRIVATE_KEY_B64:-}
+  AI_SCANNING_ENABLED: ${AI_SCANNING_ENABLED:-false}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+  SCAN_MAX_FILES: ${SCAN_MAX_FILES:-80}
+  SCAN_MAX_DIFF_CHARS: ${SCAN_MAX_DIFF_CHARS:-100000}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  MAX_WEBHOOK_BYTES: ${MAX_WEBHOOK_BYTES:-1048576}
+
+services:
+  backend:
+    build:
+      context: ./backend
+    environment: *backend-environment
+    ports:
+      - "127.0.0.1:8000:8000"
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  scan-worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.scan_worker"]
+    environment: *backend-environment
+    depends_on:
+      backend:
+        condition: service_healthy
+    # The image's HTTP healthcheck applies only to the API, not this worker.
+    healthcheck:
+      disable: true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in the root .env}
+      VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?Set SUPABASE_ANON_KEY in the root .env}
+      VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    command: ["http", "http://backend:8000", "--log=stdout", "--log-format=json"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?Set NGROK_AUTHTOKEN in the root .env}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

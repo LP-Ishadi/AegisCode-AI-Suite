@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.database.supabase_client import get_service_client
 from app.models.dispatch import ScanJob, ScanResult
+from app.services.adapter_errors import AdapterError
 from app.services.ai_service import AIServiceUnavailable
 from app.services.scan_pipeline import (
     AIScanEngine,
@@ -65,6 +66,8 @@ async def process_one(queue: ScanQueue, pipeline: ScanPipeline) -> bool:
         job = ScanJob.model_validate(raw)
         # Keep the hard work deadline well inside the 300-second DB lease.
         result = await asyncio.wait_for(pipeline.run(job.payload), timeout=120)
+    except AdapterError as exc:
+        error, retryable = exc.code, exc.retryable
     except (SourceUnavailable, AIServiceUnavailable):
         error = "adapter_unavailable"
     except TimeoutError:
@@ -111,6 +114,7 @@ if __name__ == "__main__":
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         asyncio.run(run(args.once))
     except KeyboardInterrupt:

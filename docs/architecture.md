@@ -2,7 +2,8 @@
 
 > This document records the original foundation review. Durable Postgres dispatch,
 > installation mappings, deduplication, leases and worker status transitions are now
-> implemented; see [current dispatch architecture](scan-dispatch.md). The original
+> implemented; [GitHub fetching and OpenAI diff review](live-scan-pipeline.md) are also
+> available. See [current dispatch architecture](scan-dispatch.md). The original
 > roadmap table and dotted queue paths below describe the initial scaffold.
 
 The six-page **Technical Documentation.pdf** was reviewed, including its embedded

@@ -2,7 +2,8 @@
 
 A Supabase-first foundation for secure, AI-assisted pull request review. FastAPI
 provides API security boundaries; React, TypeScript and Tailwind provide the dark
-dashboard. Scanner and AI adapters are explicit stubs, not active scanning services.
+dashboard. The durable worker supports authenticated GitHub diff fetching and OpenAI
+review; Semgrep and Claude integration remain scaffolding.
 
 ## Structure
 
@@ -13,7 +14,7 @@ backend/
     core/          # Settings, bearer auth and HMAC
     database/      # Stateless Supabase clients
     models/        # Validated scan/finding/review contracts
-    services/      # Semgrep and AI stubs
+    services/      # GitHub source, OpenAI review, dispatch and Semgrep stub
     workers/       # Durable scan worker and optional Celery bootstrap
     main.py
   tests/
@@ -33,6 +34,22 @@ docs/architecture.md
 .github/workflows/ci.yml
 .env.example
 ```
+
+## Run all services with Docker Compose
+
+Add `NGROK_AUTHTOKEN` to your existing root `.env`, keep your Supabase and webhook
+settings configured, then run from the project root:
+
+```sh
+docker compose up
+```
+
+This starts FastAPI (8000), the durable scan worker, Vite (5173), and the official
+Ngrok agent. Open `http://localhost:5173`. Use the public URL printed in Ngrok's logs
+plus `/api/v1/webhooks/github` in your GitHub App settings.
+See [Docker Compose setup](docs/docker-compose.md) for prerequisites, environment
+mapping, rebuilds, and shutdown. Follow [Live scan pipeline setup](docs/live-scan-pipeline.md)
+to apply the new migration, configure App/AI credentials and opt repositories into review.
 
 ## Dashboard quick start
 
@@ -128,10 +145,10 @@ mappings, and run the separate worker as described in
 [Durable scan dispatch](docs/scan-dispatch.md).
 
 The worker has lease recovery, bounded retries and atomic scan/finding updates.
-GitHub source acquisition and AI analysis are still adapter stubs; the default worker
-marks scans failed with `adapter_unavailable`, never falsely clean. Redis is not needed
-for the active Postgres queue. Keep the worker stopped to retain queued jobs until
-adapters are configured.
+GitHub installation tokens and bounded immutable diffs feed structured OpenAI review.
+Unconfigured, incomplete or failed reviews never produce a false clean result. Redis
+is not needed. See [Live scan pipeline setup](docs/live-scan-pipeline.md) for credentials,
+repository registration, webhook 401/403 diagnosis and retrying previously failed jobs.
 
 ## Verification
 

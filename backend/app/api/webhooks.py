@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
@@ -16,6 +17,7 @@ from app.services.dispatch_service import (
 )
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/github")
@@ -63,6 +65,12 @@ async def github_webhook(request: Request):
     try:
         result = await run_in_threadpool(DispatchService().enqueue, delivery_id, event)
     except RepositoryNotConnected as exc:
+        logger.warning(
+            "Webhook mapping rejected delivery=%s repository_id=%s installation_id=%s",
+            delivery_id,
+            event.repository.id,
+            event.installation.id,
+        )
         raise HTTPException(403, "Repository installation is not connected") from exc
     except DispatchUnavailable as exc:
         raise HTTPException(503, "Durable scan queue unavailable; redeliver this event") from exc

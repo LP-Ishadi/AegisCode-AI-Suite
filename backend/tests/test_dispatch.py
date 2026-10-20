@@ -132,7 +132,14 @@ def test_worker_hands_source_to_engine_and_persists_result():
 
 def test_unconfigured_pipeline_fails_instead_of_reporting_clean():
     jobs = queue()
-    asyncio.run(process_one(jobs, ScanPipeline(GitHubSourceProvider(), AIScanEngine())))
+    config = Settings(
+        _env_file=None,
+        github_app_id="",
+        github_app_private_key_b64=None,
+        ai_scanning_enabled=False,
+        openai_api_key=None,
+    )
+    asyncio.run(process_one(jobs, ScanPipeline(GitHubSourceProvider(config), AIScanEngine(config))))
     assert jobs.finish.call_args.kwargs["error"] == "adapter_unavailable"
     assert jobs.finish.call_args.kwargs["retryable"] is False
 

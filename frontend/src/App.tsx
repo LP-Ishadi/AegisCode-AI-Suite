@@ -22,10 +22,11 @@ export default function App() {
   const [error, setError] = useState('');
   const generation = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (background = false) => {
     if (demoMode) return;
     const current = ++generation.current;
-    setLoading(true); setError('');
+    if (!background) setLoading(true);
+    setError('');
     try {
       const result = await loadDashboard();
       if (current === generation.current) setData(result);
@@ -57,9 +58,18 @@ export default function App() {
 
   useEffect(() => {
     if (demoMode) return;
-    if (session) { void refresh(); }
-    else { ++generation.current; setData(emptyData); setError(''); setLoading(false); }
-    return () => { ++generation.current; };
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function poll() {
+      if (!stopped && document.visibilityState !== 'hidden') await refresh(true);
+      if (!stopped) timer = setTimeout(() => void poll(), 15000);
+    }
+    if (session) {
+      void refresh().finally(() => {
+        if (!stopped) timer = setTimeout(() => void poll(), 15000);
+      });
+    } else { ++generation.current; setData(emptyData); setError(''); setLoading(false); }
+    return () => { stopped = true; clearTimeout(timer); ++generation.current; };
   }, [session, refresh]);
 
   async function signOut() {
