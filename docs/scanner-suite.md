@@ -16,7 +16,13 @@ database cache is a separate persistent volume; source files are never placed in
 
 The tools run with fixed arguments and no shell:
 
-- Semgrep scans source using the pinned rules in `backend/rules/aegis.yaml`.
+- Semgrep scans source using the 14 versioned rules in `backend/rules/aegis.yaml`.
+  These cover Python and JavaScript/TypeScript uses of dynamic code execution,
+  unsafe Python deserialization, shell execution, disabled TLS checks, disabled
+  JWT verification, debug configuration, and selected web-input-to-shell flows.
+  Taint rules follow data within a file; they cannot prove an authorization
+  policy is correct across the whole application. The displayed explanation
+  comes from the bundled rule, not from scanned source text.
 - Trivy scans repository dependencies from supported manifests/lockfiles.
 - Trivy also scans up to eight distinct `FROM` images found in Dockerfiles. Those findings
   point to the relevant Dockerfile line. Mutable image tags are scanned as they
@@ -54,8 +60,11 @@ installation or repository script execution occurs while scanning.
 
 ## Coverage and remaining work
 
-The bundled Semgrep rules are a small high-signal starter set, not the full
-Semgrep registry. TruffleHog does not detect every password or credential format.
+The bundled Semgrep rules are a focused local set, not the full Semgrep registry.
+Semgrep applies its normal file targeting and ignore rules, including a repository's
+`.semgrepignore`; a clean result only covers files and rules that actually ran.
+Rule fixtures in `backend/tests/fixtures/semgrep/` contain safe and unsafe examples
+used to check the bundled rules. TruffleHog does not detect every password or credential format.
 Trivy checks known vulnerabilities in dependency manifests and `FROM` images; it
 does not analyze a newly built application image unless an immutable image digest
 is supplied through a future image artifact integration. SonarQube remains for a

@@ -14,8 +14,10 @@ from app.services.scan_pipeline import ScannerPipeline
 from app.services.scanner_suite import (
     ScannerSuite,
     image_references,
+    parse_semgrep,
     parse_trivy_image,
     parse_trufflehog,
+    semgrep_rule_messages,
 )
 
 
@@ -102,6 +104,28 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertNotIn("TOP_SECRET_VALUE", findings[0].message)
         self.assertIn("unverified", findings[0].message)
+
+    def test_semgrep_uses_static_rule_explanation(self):
+        data = {
+            "results": [
+                {
+                    "check_id": "opt.aegis.rules.aegis.python-pickle-deserialization",
+                    "path": str(self.root / "app.py"),
+                    "start": {"line": 1},
+                    "extra": {
+                        "severity": "ERROR",
+                        "message": "UNTRUSTED_SOURCE_CONTENT",
+                    },
+                }
+            ]
+        }
+        rules = Path(__file__).resolve().parents[1] / "rules" / "aegis.yaml"
+        semgrep_rule_messages.cache_clear()
+        with patch("app.services.scanner_suite.RULES", rules):
+            findings = parse_semgrep(data, self.snapshot)
+        semgrep_rule_messages.cache_clear()
+        self.assertIn("Pickle", findings[0].message)
+        self.assertNotIn("UNTRUSTED_SOURCE_CONTENT", findings[0].message)
 
     def test_image_findings_map_to_dockerfile_line(self):
         self.assertEqual(image_references(self.snapshot), [("Dockerfile", 1, "python:3.12")])

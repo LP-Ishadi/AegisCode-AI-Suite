@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from app.models.dispatch import ScanResult
@@ -55,6 +56,15 @@ def finding(rule: str, path: str, line: int, level: str, message: str) -> Findin
     )
 
 
+@lru_cache(maxsize=1)
+def semgrep_rule_messages() -> dict[str, str]:
+    # Messages come from our bundled rules, never from source-controlled scan output.
+    import yaml
+
+    rules = yaml.safe_load(RULES.read_text(encoding="utf-8"))["rules"]
+    return {rule["id"]: rule["message"] for rule in rules}
+
+
 def parse_semgrep(data: dict, snapshot: Snapshot) -> list[Finding]:
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):
         raise AdapterError("scanner_unavailable")
@@ -63,13 +73,22 @@ def parse_semgrep(data: dict, snapshot: Snapshot) -> list[Finding]:
     result = []
     for item in data["results"]:
         extra = item.get("extra", {})
+        check_id = str(item["check_id"])
+        message = next(
+            (
+                text
+                for rule_id, text in semgrep_rule_messages().items()
+                if check_id == rule_id or check_id.endswith("." + rule_id)
+            ),
+            "Static analysis rule matched; inspect this code path for the reported risk.",
+        )
         result.append(
             finding(
-                "semgrep." + str(item["check_id"]),
+                "semgrep." + check_id,
                 relative_path(snapshot, item["path"]),
                 int(item["start"]["line"]),
                 extra.get("severity", "INFO"),
-                "Static analysis rule matched; inspect this code path for the reported risk.",
+                message,
             )
         )
     return result
