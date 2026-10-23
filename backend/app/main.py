@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, repos, webhooks
+from app.api import auth, manual_reviews, repos, webhooks
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ def create_app() -> FastAPI:
         # Liveness only; this does not assert provider or worker readiness.
         return {"status": "ok", "service": "aegiscode-api"}
 
-    for router in (auth.router, repos.router, webhooks.router):
+    for router in (auth.router, repos.router, webhooks.router, manual_reviews.router):
         app.include_router(router, prefix="/api/v1")
     return app
 

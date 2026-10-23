@@ -1,0 +1,16 @@
+rules:
+  - id: aegis.python-eval
+    languages: [python]
+    severity: ERROR
+    message: Dynamic eval can execute attacker-controlled Python if its input is untrusted.
+    pattern: eval(...)
+  - id: aegis.python-exec
+    languages: [python]
+    severity: ERROR
+    message: Dynamic exec can execute attacker-controlled Python if its input is untrusted.
+    pattern: exec(...)
+  - id: aegis.javascript-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Dynamic eval can execute attacker-controlled JavaScript if its input is untrusted.
+    pattern: eval(...)

@@ -1,0 +1,18 @@
+FROM ghcr.io/aquasecurity/trivy:0.76.1 AS trivy
+FROM ghcr.io/trufflesecurity/trufflehog:3.99.1 AS trufflehog
+
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+COPY requirements.txt requirements-scanner.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-scanner.txt \
+    && useradd --create-home --uid 10001 aegis \
+    && mkdir -p /cache/trivy /opt/aegis/rules \
+    && chown -R aegis:aegis /cache /opt/aegis
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=trufflehog /usr/bin/trufflehog /usr/local/bin/trufflehog
+COPY --chown=aegis:aegis app ./app
+COPY --chown=aegis:aegis rules/aegis.yaml /opt/aegis/rules/aegis.yaml
+RUN semgrep --version && trivy --version && trufflehog --version
+USER aegis
+CMD ["python", "-m", "app.workers.scan_worker"]

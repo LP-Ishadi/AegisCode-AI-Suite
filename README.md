@@ -3,7 +3,8 @@
 A Supabase-first foundation for secure, AI-assisted pull request review. FastAPI
 provides API security boundaries; React, TypeScript and Tailwind provide the dark
 dashboard. The durable worker supports authenticated GitHub diff fetching and OpenAI
-review; Semgrep and Claude integration remain scaffolding.
+review; the separate worker also runs Semgrep, Trivy, and TruffleHog against a
+bounded repository snapshot. Claude and SonarQube remain unimplemented.
 
 ## Structure
 
@@ -14,7 +15,7 @@ backend/
     core/          # Settings, bearer auth and HMAC
     database/      # Stateless Supabase clients
     models/        # Validated scan/finding/review contracts
-    services/      # GitHub source, OpenAI review, dispatch and Semgrep stub
+    services/      # GitHub source, OpenAI review, dispatch and scanner suite
     workers/       # Durable scan worker and optional Celery bootstrap
     main.py
   tests/
@@ -145,7 +146,8 @@ mappings, and run the separate worker as described in
 [Durable scan dispatch](docs/scan-dispatch.md).
 
 The worker has lease recovery, bounded retries and atomic scan/finding updates.
-GitHub installation tokens and bounded immutable diffs feed structured OpenAI review.
+GitHub installation tokens and bounded immutable source feed Semgrep, Trivy, and
+TruffleHog; bounded diffs feed optional structured OpenAI review.
 Unconfigured, incomplete or failed reviews never produce a false clean result. Redis
 is not needed. See [Live scan pipeline setup](docs/live-scan-pipeline.md) for credentials,
 repository registration, webhook 401/403 diagnosis and retrying previously failed jobs.
@@ -179,3 +181,11 @@ validation before release.
 
 See [architecture and PDF analysis](docs/architecture.md) for trust boundaries,
 metric definitions, source references and the remaining implementation sequence.
+
+For a human-operated LLM exchange that can request bounded repository files at
+the PR commit, see [Manual repository review](docs/manual-review.md). Apply its
+additional migration before using the dashboard action.
+
+The separate scan worker also runs Semgrep, Trivy, and TruffleHog against a
+bounded immutable repository snapshot. See [Scanner suite](docs/scanner-suite.md)
+for scope, limits, and setup. SonarQube is not connected yet.

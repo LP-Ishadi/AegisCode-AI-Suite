@@ -79,7 +79,8 @@ must support the Responses API and structured outputs, and be available to your 
 project. Configure provider spending limits. Source/redaction is best-effort: enabling
 AI authorizes sending potentially proprietary code to OpenAI. `store=False` disables
 Responses storage, but does not promise zero provider retention or zero data egress.
-Claude and Semgrep are not invoked by this worker; they remain separate scaffolding.
+Claude is not invoked. The separate worker now also runs Semgrep, Trivy, and
+TruffleHog when started through Docker Compose; see [scanner suite](scanner-suite.md).
 
 Rebuild and recreate the containers:
 

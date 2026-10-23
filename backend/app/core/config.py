@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_app_private_key_b64: SecretStr | None = None
     ai_scanning_enabled: bool = False
+    scanners_enabled: bool = False
     openai_model: str = Field(default="gpt-4o", max_length=80)
     scan_max_files: int = Field(default=80, ge=1, le=299)
     scan_max_diff_chars: int = Field(default=100_000, ge=1000, le=180_000)

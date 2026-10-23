@@ -23,7 +23,7 @@ class SourceUnavailable(AdapterError):
         super().__init__("adapter_unavailable")
 
 
-def authorize_source(metadata: ScanMetadata) -> None:
+def authorize_repository(metadata: ScanMetadata) -> dict:
     rows = (
         get_service_client()
         .table("repositories")
@@ -36,7 +36,12 @@ def authorize_source(metadata: ScanMetadata) -> None:
     )
     if not rows:
         raise AdapterError("repository_not_connected")
-    if rows[0].get("ai_scan_enabled") is not True:
+    return rows[0]
+
+
+def authorize_source(metadata: ScanMetadata) -> None:
+    repo = authorize_repository(metadata)
+    if repo.get("ai_scan_enabled") is not True:
         raise AdapterError("ai_not_authorized")
 
 

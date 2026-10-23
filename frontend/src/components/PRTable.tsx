@@ -10,7 +10,7 @@ const statuses: Record<ReviewStatus, { label: string; className: string }> = {
   failed: { label: 'Scan failed', className: 'bg-rose-400/8 text-rose-300 border-rose-400/15' },
 };
 
-export function PRTable({ pullRequests }: { pullRequests: PullRequest[] }) {
+export function PRTable({ pullRequests, onManualReview }: { pullRequests: PullRequest[]; onManualReview?: (scanId: string) => void }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const filtered = pullRequests.filter(pr => (filter === 'all' || pr.status === filter)
@@ -29,7 +29,7 @@ export function PRTable({ pullRequests }: { pullRequests: PullRequest[] }) {
         <td className="px-6 py-5"><div className="flex gap-3"><GitPullRequest size={17} className="mt-0.5 shrink-0 text-zinc-500" /><div><p className="max-w-[380px] font-medium text-zinc-200">{pr.title}</p><p className="mt-2 text-[11px] text-zinc-500"><span className="text-zinc-400">{pr.repository}</span> <span className="px-1">·</span> #{pr.number} <span className="px-1">·</span> {pr.author}</p></div></div></td>
         <td className="px-6 py-5"><span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-1 text-[10px] ${statuses[pr.status].className}`}>{pr.status === 'passed' ? <Check size={12} /> : pr.status === 'scanning' ? <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" /> : <CircleAlert size={12} />}{statuses[pr.status].label}</span></td>
         <td className="px-6 py-5"><div className="flex flex-wrap gap-1.5">{pr.riskTags.length ? pr.riskTags.map(tag => <span key={tag} className="whitespace-nowrap rounded border border-rose-300/10 bg-rose-300/5 px-2 py-1 text-[10px] text-rose-200/80">{tag}</span>) : <span className="text-zinc-500">{pr.status === 'passed' ? 'No findings' : '—'}</span>}</div></td>
-        <td className="whitespace-nowrap px-6 py-5 text-[11px] text-zinc-500"><time dateTime={pr.updatedAt}>{new Date(pr.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time></td>
+        <td className="whitespace-nowrap px-6 py-5 text-[11px] text-zinc-500"><time dateTime={pr.updatedAt}>{new Date(pr.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>{onManualReview && pr.latestScanId && ['passed', 'action_required', 'failed'].includes(pr.status) && <button className="ml-3 text-indigo-300 underline" onClick={() => onManualReview(pr.latestScanId!)}>Manual review</button>}</td>
       </tr>)}</tbody>
     </table></div>
     {filtered.length === 0 && <p className="px-6 py-12 text-center text-sm text-zinc-500">{pullRequests.length ? 'No pull requests match these filters.' : 'No pull requests yet. Connected reviews will appear here.'}</p>}

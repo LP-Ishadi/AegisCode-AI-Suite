@@ -7,6 +7,7 @@ import logging
 from httpx import HTTPError
 from pydantic import ValidationError
 
+from app.core.config import get_settings
 from app.database.supabase_client import get_service_client
 from app.models.dispatch import ScanJob, ScanResult
 from app.services.adapter_errors import AdapterError
@@ -14,6 +15,7 @@ from app.services.ai_service import AIServiceUnavailable
 from app.services.scan_pipeline import (
     AIScanEngine,
     GitHubSourceProvider,
+    ScannerPipeline,
     ScanPipeline,
     SourceUnavailable,
 )
@@ -64,10 +66,13 @@ async def process_one(queue: ScanQueue, pipeline: ScanPipeline) -> bool:
     retryable = False
     try:
         job = ScanJob.model_validate(raw)
-        # Keep the hard work deadline well inside the 300-second DB lease.
-        result = await asyncio.wait_for(pipeline.run(job.payload), timeout=120)
+        # Keep the hard work deadline inside the 300-second DB lease.
+        result = await asyncio.wait_for(pipeline.run(job.payload), timeout=240)
     except AdapterError as exc:
-        error, retryable = exc.code, exc.retryable
+        error, retryable = (
+            "adapter_unavailable" if exc.code == "scanner_unavailable" else exc.code,
+            exc.retryable,
+        )
     except (SourceUnavailable, AIServiceUnavailable):
         error = "adapter_unavailable"
     except TimeoutError:
@@ -93,7 +98,11 @@ async def process_one(queue: ScanQueue, pipeline: ScanPipeline) -> bool:
 
 async def run(once: bool = False) -> None:
     queue = ScanQueue()
-    pipeline = ScanPipeline(GitHubSourceProvider(), AIScanEngine())
+    pipeline = (
+        ScannerPipeline()
+        if get_settings().scanners_enabled
+        else ScanPipeline(GitHubSourceProvider(), AIScanEngine())
+    )
     while True:
         try:
             processed = await process_one(queue, pipeline)
