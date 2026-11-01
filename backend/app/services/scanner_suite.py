@@ -17,6 +17,19 @@ RULES = Path("/opt/aegis/rules/aegis.yaml")
 SAFE_ID = re.compile(r"[^A-Za-z0-9_.:-]+")
 FROM_LINE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)", re.IGNORECASE)
 IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,254}$")
+PUBLIC_REGISTRIES = {"docker.io", "index.docker.io", "ghcr.io", "quay.io", "registry.k8s.io"}
+
+
+def allowed_image_reference(reference: str) -> bool:
+    """Only fetch images from explicitly trusted public registry hostnames."""
+    if not IMAGE_REF.fullmatch(reference) or "://" in reference:
+        return False
+    if "/" not in reference:
+        return "." not in reference.split(":", 1)[0]  # image:tag on Docker Hub
+    first = reference.split("/", 1)[0].lower()
+    if "." in first or ":" in first or first == "localhost":
+        return first in PUBLIC_REGISTRIES
+    return True  # Unqualified references resolve through Docker Hub.
 
 
 def relative_path(snapshot: Snapshot, raw: str) -> str:
@@ -141,7 +154,7 @@ def image_references(snapshot: Snapshot) -> list[tuple[str, int, str]]:
             if not match:
                 continue
             reference = match[1]
-            if "$" in reference or not IMAGE_REF.fullmatch(reference) or "://" in reference:
+            if "$" in reference or not allowed_image_reference(reference):
                 raise AdapterError("source_incomplete")
             if reference.lower() not in stages and reference.lower() != "scratch":
                 references.append((path, number, reference))
@@ -256,6 +269,10 @@ async def run_command(argv: list[str], *, timeout: int = 35) -> bytes:
 class ScannerSuite:
     async def scan(self, snapshot: Snapshot) -> ScanResult:
         root = str(snapshot.root)
+        # A repository-controlled ignore file can remove arbitrary targets from Semgrep.
+        # Until a trusted override is supported, fail the whole scan instead of passing it.
+        if any(Path(path).name == ".semgrepignore" for path in snapshot.paths):
+            raise AdapterError("source_incomplete")
         image_refs = image_references(snapshot)
         unique_images = sorted({reference for _, _, reference in image_refs})
         trivy_lock = asyncio.Semaphore(1)
@@ -275,6 +292,8 @@ class ScannerSuite:
                     "--metrics",
                     "off",
                     "--disable-version-check",
+                    "--disable-nosem",
+                    "--no-git-ignore",
                     root,
                 ]
             ),

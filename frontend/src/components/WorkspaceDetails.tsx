@@ -3,12 +3,12 @@ import { ExternalLink, GitBranch, X } from 'lucide-react';
 import type { MetricView } from './DashboardStats';
 import { PRTable } from './PRTable';
 import { securityScore, type DashboardData } from '../lib/dashboard';
-import { loadRepositories, loadVulnerabilities, sampleFindings, type Repository, type Vulnerability } from '../lib/details';
+import { findingSource, loadRepositories, loadVulnerabilities, sampleFindings, type FindingGroup, type Repository, type Vulnerability } from '../lib/details';
 
 type View = MetricView | 'repositories';
 const titles: Record<View, string> = {
   repositories: 'Connected GitHub repositories', pullRequests: 'Pull request activity',
-  findings: 'Vulnerability logs', score: 'Security score details',
+  projectFindings: 'Code & dependency findings', imageFindings: 'Docker image findings', score: 'Security score details',
 };
 
 export function WorkspaceDetails({ view, data, demo, onClose }: {
@@ -17,12 +17,15 @@ export function WorkspaceDetails({ view, data, demo, onClose }: {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [findings, setFindings] = useState<Vulnerability[]>([]);
-  const [loading, setLoading] = useState(view === 'repositories' || view === 'findings');
+  const [findings, setFindings] = useState<Record<FindingGroup, Vulnerability[]>>({ project: [], image: [] });
+  const isFindings = view === 'projectFindings' || view === 'imageFindings';
+  const [loading, setLoading] = useState(view === 'repositories' || isFindings);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState('');
   const [severity, setSeverity] = useState('all');
+  const [source, setSource] = useState('all');
+  const [group, setGroup] = useState<FindingGroup>(view === 'imageFindings' ? 'image' : 'project');
 
   useEffect(() => {
     const element = dialog.current;
@@ -36,7 +39,7 @@ export function WorkspaceDetails({ view, data, demo, onClose }: {
   useEffect(() => {
     let active = true;
     setError('');
-    if (view !== 'repositories' && view !== 'findings') { setLoading(false); return; }
+    if (view !== 'repositories' && !isFindings) { setLoading(false); return; }
     setLoading(true);
     async function load() {
       try {
@@ -44,7 +47,10 @@ export function WorkspaceDetails({ view, data, demo, onClose }: {
           const rows = demo ? [...new Set(data.pullRequests.map(pr => pr.repository))].map(name => ({ id: name, full_name: name, default_branch: 'main' })) : await loadRepositories();
           if (active) setRepositories(rows);
         } else {
-          const rows = demo ? sampleFindings : await loadVulnerabilities();
+          const rows = demo
+            ? { project: sampleFindings, image: [] }
+            : await Promise.all([loadVulnerabilities('project'), loadVulnerabilities('image')])
+              .then(([project, image]) => ({ project, image }));
           if (active) setFindings(rows);
         }
       } catch (err) { if (active) setError(err instanceof Error ? err.message : 'Unable to load details.'); }
@@ -52,16 +58,17 @@ export function WorkspaceDetails({ view, data, demo, onClose }: {
     }
     void load();
     return () => { active = false; };
-  }, [view, demo, data.pullRequests, attempt]);
+  }, [view, isFindings, demo, data.pullRequests, attempt]);
 
-  const visibleFindings = findings.filter(f => (severity === 'all' || f.severity === severity)
+  const visibleFindings = findings[group].filter(f => (severity === 'all' || f.severity === severity)
+    && (source === 'all' || findingSource(f.rule_id) === source)
     && `${f.rule_id} ${f.file_path} ${f.message}`.toLowerCase().includes(query.toLowerCase()));
   const score = securityScore(data);
 
   return <dialog ref={dialog} aria-labelledby={titleId} onCancel={onClose}
     className="m-auto max-h-[90dvh] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto rounded-2xl border border-indigo-400/25 bg-slate-950 p-0 text-slate-100 shadow-2xl backdrop:bg-slate-950/80 backdrop:backdrop-blur-sm">
     <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-indigo-400/15 bg-slate-950 p-5">
-      <h2 id={titleId} className="text-lg font-semibold">{titles[view]}</h2>
+      <h2 id={titleId} className="text-lg font-semibold">{isFindings ? (group === 'image' ? titles.imageFindings : titles.projectFindings) : titles[view]}</h2>
       <button type="button" aria-label="Close details" onClick={onClose} className="rounded-lg p-2 text-slate-400 hover:bg-indigo-500/15 hover:text-white"><X size={20} /></button>
     </header>
     <div className="space-y-5 p-5 md:p-7">
@@ -84,15 +91,22 @@ export function WorkspaceDetails({ view, data, demo, onClose }: {
           {!repositories.some(r => r.full_name.toLowerCase().includes(query.toLowerCase())) && <p className="py-6 text-sm text-slate-400">{repositories.length ? 'No repositories match your search.' : 'No connected repository records yet.'}</p>}
         </>}
       </>}
-      {view === 'findings' && !loading && !error && <>
-        <p className="text-xs text-slate-400">{demo ? 'Two sample log entries; overview metrics are illustrative.' : 'Latest 100 unresolved findings. Open an entry for its rule, location, and scan details.'}</p>
-        <div className="flex flex-wrap gap-3"><label className="grow text-xs text-slate-400">Search logs<input className="form-input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Rule, file path, or message" /></label><label className="text-xs text-slate-400">Severity<select className="form-input" value={severity} onChange={e => setSeverity(e.target.value)}>{['all', 'critical', 'high', 'medium', 'low', 'info'].map(s => <option key={s} value={s}>{s}</option>)}</select></label></div>
+      {isFindings && !loading && !error && <>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Finding category">
+          {([['project', 'Code & dependency findings', data.activeProjectFindings], ['image', 'Docker image findings', data.activeImageFindings]] as const).map(([id, label, count]) =>
+            <button type="button" key={id} aria-pressed={group === id} onClick={() => { setGroup(id); setSource('all'); }}
+              className={`rounded-lg border px-4 py-2 text-sm ${group === id ? 'border-indigo-300/60 bg-indigo-500/20 text-indigo-100' : 'border-white/10 text-slate-400 hover:border-indigo-400/40 hover:text-white'}`}>{label} ({count.toLocaleString()})</button>)}
+        </div>
+        <p className="text-xs text-slate-400">{demo ? 'Sample log entries; overview metrics are illustrative.' : 'Up to 200 recent unresolved findings per severity in this category, with Critical first. Findings may predate the PR.'}</p>
+        {group === 'image' ? <p className="text-xs text-amber-200/80">These are package advisories in Dockerfile base images, linked to each FROM line. They are not code bugs on that line or proof the package is in the final deployed image. Check runtime use and exposure before treating one as exploitable.</p>
+          : <p className="text-xs text-slate-400">This group includes code patterns, possible secrets, dependency packages, and AI review results.</p>}
+        <div className="flex flex-wrap gap-3"><label className="grow text-xs text-slate-400">Search logs<input className="form-input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Rule, file path, or message" /></label><label className="text-xs text-slate-400">Severity<select className="form-input" value={severity} onChange={e => setSeverity(e.target.value)}>{['all', 'critical', 'high', 'medium', 'low', 'info'].map(s => <option key={s} value={s}>{s}</option>)}</select></label>{group === 'project' && <label className="text-xs text-slate-400">Source<select className="form-input" value={source} onChange={e => setSource(e.target.value)}>{['all', 'Code pattern', 'Dependency package', 'Possible secret', 'Other finding'].map(s => <option key={s} value={s}>{s}</option>)}</select></label>}</div>
         {visibleFindings.map(finding => <details key={finding.id} className="panel p-4">
-          <summary className="cursor-pointer text-sm"><span className="mr-3 rounded bg-violet-500/15 px-2 py-1 text-xs uppercase text-violet-200">{finding.severity}</span><span className="break-all">{finding.rule_id}</span><span className="mt-3 block break-all text-xs text-slate-400">{finding.file_path}:{finding.line}</span></summary>
+          <summary className="cursor-pointer text-sm"><span className="mr-3 rounded bg-violet-500/15 px-2 py-1 text-xs uppercase text-violet-200">{finding.severity}</span><span className="break-all">{finding.rule_id}</span><span className="mt-3 block break-all text-xs text-slate-400">{findingSource(finding.rule_id)} · {finding.file_path}:{finding.line}</span></summary>
           <p className="mt-4 whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">{finding.message}</p>
           <dl className="mt-4 space-y-2 break-all text-xs text-slate-400"><div><dt className="inline font-medium text-slate-300">Scan: </dt><dd className="inline">{finding.scan_id}</dd></div><div><dt className="inline font-medium text-slate-300">Detected: </dt><dd className="inline">{new Date(finding.created_at).toLocaleString()}</dd></div><div><dt className="inline font-medium text-slate-300">Status: </dt><dd className="inline">Unresolved</dd></div></dl>
         </details>)}
-        {!visibleFindings.length && <p className="py-6 text-sm text-slate-400">{findings.length ? 'No findings match these filters.' : 'No unresolved findings recorded. This does not confirm that every repository has been scanned.'}</p>}
+        {!visibleFindings.length && <p className="py-6 text-sm text-slate-400">{findings[group].length ? 'No findings match these filters.' : `No unresolved ${group === 'image' ? 'Docker image' : 'project'} findings recorded. This does not confirm that every repository has been scanned.`}</p>}
       </>}
       {view === 'pullRequests' && <PRTable pullRequests={data.pullRequests} />}
       {view === 'score' && <>

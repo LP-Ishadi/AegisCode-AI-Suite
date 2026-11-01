@@ -21,6 +21,15 @@ x-backend-environment: &backend-environment
   SCANNERS_ENABLED: ${SCANNERS_ENABLED:-false}
 
 services:
+  scan-volume-init:
+    build:
+      context: ./backend
+    user: root
+    command: ["chown", "10001:10001", "/scan-data"]
+    volumes:
+      - scan-source:/scan-data
+    restart: "no"
+
   backend:
     build:
       context: ./backend
@@ -39,12 +48,12 @@ services:
   scan-worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile.scanner
     environment:
       <<: *backend-environment
       SCANNERS_ENABLED: "true"
+      SCANNER_SERVICE_URL: http://scanner:8000
     volumes:
-      - trivy-cache:/cache
+      - scan-source:/scan-data
     read_only: true
     tmpfs:
       - /tmp:size=536870912,mode=1777
@@ -56,14 +65,51 @@ services:
     mem_limit: 2g
     cpus: 2
     depends_on:
+      scan-volume-init:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
+      scanner:
+        condition: service_started
+    networks:
+      - default
+      - scanner-network
     # The image's HTTP healthcheck applies only to the API, not this worker.
     healthcheck:
       disable: true
     init: true
     restart: unless-stopped
     stop_grace_period: 15s
+
+  scanner:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.scanner
+    command: ["uvicorn", "app.scanner_api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+      TRIVY_CACHE_DIR: /cache/trivy
+    volumes:
+      - scan-source:/scan-data:ro
+      - trivy-cache:/cache
+    depends_on:
+      scan-volume-init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    networks:
+      - scanner-network
+    init: true
+    restart: unless-stopped
 
   frontend:
     build:
@@ -87,15 +133,29 @@ services:
       retries: 5
       start_period: 20s
 
+  webhook-gateway:
+    build:
+      context: ./backend
+    command: ["uvicorn", "app.webhook_main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in the root .env}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?Set SUPABASE_SERVICE_KEY in the root .env}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET in the root .env}
+      MAX_WEBHOOK_BYTES: ${MAX_WEBHOOK_BYTES:-1048576}
+    restart: unless-stopped
+
   ngrok:
-    image: ngrok/ngrok:latest
-    command: ["http", "http://backend:8000", "--log=stdout", "--log-format=json"]
+    image: ngrok/ngrok:3.39.13-debian
+    command: ["http", "http://webhook-gateway:8000", "--log=stdout", "--log-format=json"]
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?Set NGROK_AUTHTOKEN in the root .env}
     depends_on:
-      backend:
-        condition: service_healthy
+      - webhook-gateway
     restart: unless-stopped
 
 volumes:
   trivy-cache:
+  scan-source:
+
+networks:
+  scanner-network:

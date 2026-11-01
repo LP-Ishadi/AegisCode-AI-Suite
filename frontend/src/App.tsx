@@ -3,7 +3,6 @@ import type { Session } from '@supabase/supabase-js';
 import { Activity, ArrowUpRight, LayoutDashboard, RefreshCw } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { SignIn } from './components/SignIn';
-import { ManualReview } from './components/ManualReview';
 import Dashboard from './pages';
 import Analytics from './pages/analytics';
 import { demoMode, supabase } from './lib/supabaseClient';
@@ -11,11 +10,10 @@ import { loadDashboard, type DashboardData } from './lib/dashboard';
 import { demoData } from './lib/demoData';
 import { restoreSession } from './lib/auth';
 
-const emptyData: DashboardData = { totalPRs: 0, activeVulnerabilities: 0, repositoryCount: 0, passedPRs: 0, reviewedPRs: 0, pullRequests: [] };
+const emptyData: DashboardData = { totalPRs: 0, activeVulnerabilities: 0, activeProjectFindings: 0, activeImageFindings: 0, repositoryCount: 0, passedPRs: 0, reviewedPRs: 0, pullRequests: [] };
 
 export default function App() {
   const [page, setPage] = useState<'overview' | 'analytics'>('overview');
-  const [manualScanId, setManualScanId] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(!demoMode && !!supabase);
   const [authError, setAuthError] = useState('');
@@ -92,7 +90,7 @@ export default function App() {
         {demoMode && <div className="mb-6 flex items-center gap-2 rounded-lg border border-indigo-300/10 bg-indigo-300/4 px-4 py-3 text-xs text-indigo-200/70"><span className="size-1.5 shrink-0 rounded-full bg-indigo-300" />Demo workspace — sample reviews and metrics. No repositories are connected.</div>}
         {error && <div role="alert" className="mb-5 rounded-lg border border-rose-300/20 bg-rose-300/5 p-4 text-sm text-rose-200">{error}</div>}
         {loading && <p role="status" className="mb-4 text-xs text-zinc-400">Loading your cloud workspace…</p>}
-        {manualScanId && session ? <ManualReview scanId={manualScanId} session={session} onClose={() => setManualScanId(null)} onComplete={() => void refresh(true)} /> : page === 'overview' ? <Dashboard data={data} demo={demoMode} onManualReview={setManualScanId} /> : <Analytics data={data} />}
+        {page === 'overview' ? <Dashboard data={data} demo={demoMode} /> : <Analytics data={data} />}
         <footer className="mt-7 flex flex-wrap justify-between gap-3 text-[10px] text-zinc-600"><span>AegisCode AI Suite · Secure code starts here</span><span>{demoMode ? 'Sample data · Foundation preview' : 'Supabase cloud · Session in memory'}</span></footer>
       </>}
     </main>

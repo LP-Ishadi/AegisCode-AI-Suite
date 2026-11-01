@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient';
+import { IMAGE_RULE_PATTERN } from './details';
 
 export type ReviewStatus = 'passed' | 'action_required' | 'scanning' | 'queued' | 'failed';
 export interface PullRequest {
@@ -7,6 +8,7 @@ export interface PullRequest {
 }
 export interface DashboardData {
   totalPRs: number; activeVulnerabilities: number; repositoryCount: number;
+  activeProjectFindings: number; activeImageFindings: number;
   passedPRs: number; reviewedPRs: number; pullRequests: PullRequest[];
 }
 
@@ -16,19 +18,22 @@ export function securityScore(data: Pick<DashboardData, 'passedPRs' | 'reviewedP
 
 export async function loadDashboard(): Promise<DashboardData> {
   if (!supabase) throw new Error('Add your public Supabase configuration to connect this workspace.');
-  const [prs, repositories, vulnerabilities, passed, reviewed] = await Promise.all([
+  const [prs, repositories, projectFindings, imageFindings, passed, reviewed] = await Promise.all([
     supabase.from('pull_requests').select('id,number,title,author,status,risk_tags,updated_at,latest_scan_id,repositories(full_name)', { count: 'exact' }).order('updated_at', { ascending: false }).limit(50),
     supabase.from('repositories').select('id', { count: 'exact', head: true }),
-    supabase.from('findings').select('id', { count: 'exact', head: true }).eq('resolved', false),
+    supabase.from('findings').select('id', { count: 'exact', head: true }).eq('resolved', false).not('rule_id', 'like', IMAGE_RULE_PATTERN),
+    supabase.from('findings').select('id', { count: 'exact', head: true }).eq('resolved', false).like('rule_id', IMAGE_RULE_PATTERN),
     supabase.from('pull_requests').select('id', { count: 'exact', head: true }).eq('status', 'passed'),
     supabase.from('pull_requests').select('id', { count: 'exact', head: true }).in('status', ['passed', 'action_required']),
   ]);
-  if ([prs, repositories, vulnerabilities, passed, reviewed].some(result => result.error)) {
+  if ([prs, repositories, projectFindings, imageFindings, passed, reviewed].some(result => result.error)) {
     throw new Error('Unable to load cloud data. Check your connection, membership, and database migration.');
   }
   return {
     totalPRs: prs.count ?? 0, repositoryCount: repositories.count ?? 0,
-    activeVulnerabilities: vulnerabilities.count ?? 0,
+    activeVulnerabilities: (projectFindings.count ?? 0) + (imageFindings.count ?? 0),
+    activeProjectFindings: projectFindings.count ?? 0,
+    activeImageFindings: imageFindings.count ?? 0,
     passedPRs: passed.count ?? 0, reviewedPRs: reviewed.count ?? 0,
     pullRequests: (prs.data ?? []).map(row => {
       // PostgREST infers relationship cardinality at runtime without generated DB types.

@@ -1,7 +1,7 @@
 import type { DashboardData } from './dashboard';
 
 export const demoData: DashboardData = {
-  totalPRs: 142, activeVulnerabilities: 7, repositoryCount: 6, passedPRs: 128, reviewedPRs: 136,
+  totalPRs: 142, activeVulnerabilities: 7, activeProjectFindings: 7, activeImageFindings: 0, repositoryCount: 6, passedPRs: 128, reviewedPRs: 136,
   pullRequests: [
     { id: '1', repository: 'acme/api-gateway', number: 284, title: 'Add organization-scoped API authentication', author: 'sarah-chen', status: 'action_required', riskTags: ['SQL injection', 'Auth bypass'], updatedAt: '2026-09-30T08:30:00Z' },
     { id: '2', repository: 'acme/web-platform', number: 192, title: 'Refactor workspace settings and permissions', author: 'alex-rivera', status: 'passed', riskTags: [], updatedAt: '2026-09-30T08:12:00Z' },

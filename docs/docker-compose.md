@@ -37,7 +37,8 @@ From the repository root:
 docker compose up
 ```
 
-Compose builds missing images and starts all four services. Backend liveness gates
+Compose builds missing images and starts the API, worker, scanner, webhook gateway,
+frontend, and tunnel. Backend liveness gates
 startup of the worker, frontend and tunnel. It does not prove Supabase/worker readiness;
 check the logs for configuration/migration errors. Initial image pulls/builds require
 internet access. The foreground command displays logs together; no extra terminals
@@ -47,8 +48,10 @@ are required. To run in the background instead, use `docker compose up -d`.
 | --- | --- |
 | Frontend | http://localhost:5173 |
 | Backend | http://localhost:8000/health and /docs in development |
-| Scan worker | Polls the durable Supabase queue; no published port |
-| Ngrok | Official `ngrok/ngrok` image tunnels to `http://backend:8000` on the Compose network |
+| Scan worker | Fetches source and polls the durable Supabase queue; no published port |
+| Scanner | Runs Semgrep, Trivy, and TruffleHog without tenant credentials; no published port |
+| Webhook gateway | Accepts only the signed webhook route; no published port |
+| Ngrok | Tunnels to `http://webhook-gateway:8000` on the Compose network |
 
 Ngrok's startup logs include the public HTTPS URL (`url` on the started-tunnel log).
 You can inspect them later with `docker compose logs ngrok`. Configure the GitHub App
