@@ -41,6 +41,8 @@ async def scan(request: ScanRequest):
     if actual != set(request.paths) or len(actual) != len(request.paths):
         raise HTTPException(422, "source_incomplete")
     try:
-        return (await ScannerSuite().scan(Snapshot(source, frozenset(actual), request.commit_sha))).model_dump(mode="json")
+        snapshot = Snapshot(source, frozenset(actual), request.commit_sha)
+        result = await ScannerSuite().scan(snapshot)
+        return result.model_dump(mode="json")
     except AdapterError as exc:
         raise HTTPException(422 if exc.code == "source_incomplete" else 503, exc.code) from exc

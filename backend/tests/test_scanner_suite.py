@@ -143,7 +143,13 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual((result[0].file_path, result[0].line), ("Dockerfile", 1))
 
     def test_image_registry_cannot_target_internal_services(self):
-        for reference in ("backend:8000/private", "127.0.0.1:5000/app", "localhost/app", "evil.example/app"):
+        blocked = (
+            "backend:8000/private",
+            "127.0.0.1:5000/app",
+            "localhost/app",
+            "evil.example/app",
+        )
+        for reference in blocked:
             (self.root / "Dockerfile").write_text(f"FROM {reference}\n")
             with self.assertRaises(AdapterError):
                 image_references(self.snapshot)
@@ -169,7 +175,9 @@ class ScannerTests(unittest.TestCase):
             result = asyncio.run(ScannerSuite().scan(self.snapshot))
         self.assertEqual(result.findings, [])
         self.assertEqual(run.call_count, 4)
-        semgrep_args = next(call.args[0] for call in run.call_args_list if call.args[0][0] == "semgrep")
+        semgrep_args = next(
+            call.args[0] for call in run.call_args_list if call.args[0][0] == "semgrep"
+        )
         self.assertIn("--disable-nosem", semgrep_args)
         self.assertIn("--no-git-ignore", semgrep_args)
 
@@ -191,7 +199,9 @@ class ScannerTests(unittest.TestCase):
         )
         with patch(
             "app.services.scan_pipeline.get_settings",
-            return_value=SimpleNamespace(ai_scanning_enabled=False, openai_api_key=None, scanner_service_url=None),
+            return_value=SimpleNamespace(
+                ai_scanning_enabled=False, openai_api_key=None, scanner_service_url=None
+            ),
         ):
             result = asyncio.run(pipeline.run(metadata))
         self.assertEqual(result.engine_version, "scanner-suite-test")

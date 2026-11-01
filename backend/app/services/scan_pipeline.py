@@ -7,13 +7,13 @@ from typing import Protocol
 
 from app.core.config import get_settings
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
+from app.services.adapter_errors import AdapterError
 from app.services.ai_scanner import AIScanEngine as AIScanEngine
 from app.services.github_source import GitHubSourceProvider as GitHubSourceProvider
 from app.services.github_source import SourceUnavailable as SourceUnavailable
 from app.services.github_source import authorize_repository
-from app.services.repository_snapshot import RepositorySnapshotProvider
-from app.services.adapter_errors import AdapterError
 from app.services.remote_scanner import RemoteScannerSuite
+from app.services.repository_snapshot import RepositorySnapshotProvider
 
 
 class SourceProvider(Protocol):

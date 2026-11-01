@@ -12,12 +12,16 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(client.get("/docs").status_code, 404)
         self.assertEqual(client.get("/openapi.json").status_code, 404)
         self.assertEqual(client.get("/health").status_code, 404)
-        self.assertEqual(client.get("/api/v1/manual-reviews/00000000-0000-0000-0000-000000000000").status_code, 404)
+        response = client.get("/api/v1/manual-reviews/00000000-0000-0000-0000-000000000000")
+        self.assertEqual(response.status_code, 404)
         self.assertIn(client.post("/api/v1/webhooks/github").status_code, (401, 503))
 
     def test_scanner_service_rejects_arbitrary_directory(self):
         client = TestClient(scanner_app)
-        response = client.post("/scan", json={"directory":"../backend", "paths":["app.py"], "commit_sha":"a" * 40})
+        response = client.post(
+            "/scan",
+            json={"directory": "../backend", "paths": ["app.py"], "commit_sha": "a" * 40},
+        )
         self.assertEqual(response.status_code, 422)
 
 if __name__ == "__main__":
