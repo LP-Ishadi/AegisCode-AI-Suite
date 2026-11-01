@@ -7,12 +7,13 @@ from typing import Protocol
 
 from app.core.config import get_settings
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
+from app.services.adapter_errors import AdapterError
 from app.services.ai_scanner import AIScanEngine as AIScanEngine
 from app.services.github_source import GitHubSourceProvider as GitHubSourceProvider
 from app.services.github_source import SourceUnavailable as SourceUnavailable
 from app.services.github_source import authorize_repository
+from app.services.remote_scanner import RemoteScannerSuite
 from app.services.repository_snapshot import RepositorySnapshotProvider
-from app.services.scanner_suite import ScannerSuite
 
 
 class SourceProvider(Protocol):
@@ -40,14 +41,21 @@ class ScannerPipeline:
         self, snapshot=None, scanners=None, source=None, engine=None, authorize=authorize_repository
     ):
         self.snapshot = snapshot or RepositorySnapshotProvider()
-        self.scanners = scanners or ScannerSuite()
+        settings = get_settings()
+        self.scanners = scanners or (
+            RemoteScannerSuite(str(settings.scanner_service_url))
+            if settings.scanner_service_url else None
+        )
         self.source = source or GitHubSourceProvider()
         self.engine = engine or AIScanEngine()
         self.authorize = authorize
 
     async def run(self, metadata: ScanMetadata) -> ScanResult:
         settings = get_settings()
-        with TemporaryDirectory(prefix="aegis-scan-") as directory:
+        if self.scanners is None:
+            raise AdapterError("scanner_unavailable")
+        shared_root = "/scan-data" if settings.scanner_service_url else None
+        with TemporaryDirectory(prefix="aegis-scan-", dir=shared_root) as directory:
             root = Path(directory) / "source"
             root.mkdir()
             snapshot = await self.snapshot.fetch_into(metadata, root)

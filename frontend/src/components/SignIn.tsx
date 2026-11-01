@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { Github, LoaderCircle, ShieldCheck } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 
-export function SignIn({ callbackError = '' }: { callbackError?: string }) {
+export function SignIn({ callbackError = '', pendingManualScanId }: { callbackError?: string; pendingManualScanId?: string }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
@@ -13,6 +13,8 @@ export function SignIn({ callbackError = '' }: { callbackError?: string }) {
     setBusy(true);
     setError('');
     try {
+      // Only the scan ID crosses the OAuth redirect. Authentication tokens stay in memory.
+      if (pendingManualScanId) sessionStorage.setItem('aegis_pending_manual_scan', pendingManualScanId);
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'github',
         options: { redirectTo: `${window.location.origin}/` },
@@ -20,6 +22,9 @@ export function SignIn({ callbackError = '' }: { callbackError?: string }) {
       if (error) throw error;
       // Keep the button disabled while the browser navigates to GitHub.
     } catch {
+      if (pendingManualScanId) {
+        try { sessionStorage.removeItem('aegis_pending_manual_scan'); } catch { /* Storage may be disabled. */ }
+      }
       setError('Unable to start GitHub sign-in. Please try again.');
       pending.current = false;
       setBusy(false);

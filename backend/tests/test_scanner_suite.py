@@ -142,6 +142,27 @@ class ScannerTests(unittest.TestCase):
         result = parse_trivy_image(data, "Dockerfile", 1, "python:3.12")
         self.assertEqual((result[0].file_path, result[0].line), ("Dockerfile", 1))
 
+    def test_image_registry_cannot_target_internal_services(self):
+        blocked = (
+            "backend:8000/private",
+            "127.0.0.1:5000/app",
+            "localhost/app",
+            "evil.example/app",
+        )
+        for reference in blocked:
+            (self.root / "Dockerfile").write_text(f"FROM {reference}\n")
+            with self.assertRaises(AdapterError):
+                image_references(self.snapshot)
+        (self.root / "Dockerfile").write_text("FROM ghcr.io/example/app:1\n")
+        self.assertEqual(image_references(self.snapshot)[0][2], "ghcr.io/example/app:1")
+
+    def test_repository_semgrep_ignore_fails_scan(self):
+        (self.root / ".semgrepignore").write_text("**/*\n")
+        snapshot = Snapshot(self.root, self.snapshot.paths | {".semgrepignore"}, "a" * 40)
+        with self.assertRaises(AdapterError) as error:
+            asyncio.run(ScannerSuite().scan(snapshot))
+        self.assertEqual(error.exception.code, "source_incomplete")
+
     def test_suite_runs_all_scanners(self):
         async def fake_run(argv, **_):
             if argv[0] == "semgrep":
@@ -154,6 +175,11 @@ class ScannerTests(unittest.TestCase):
             result = asyncio.run(ScannerSuite().scan(self.snapshot))
         self.assertEqual(result.findings, [])
         self.assertEqual(run.call_count, 4)
+        semgrep_args = next(
+            call.args[0] for call in run.call_args_list if call.args[0][0] == "semgrep"
+        )
+        self.assertIn("--disable-nosem", semgrep_args)
+        self.assertIn("--no-git-ignore", semgrep_args)
 
     def test_scanner_pipeline_finishes_without_openai_key(self):
         metadata = ScanMetadata.model_construct(commit_sha="a" * 40)
@@ -173,7 +199,9 @@ class ScannerTests(unittest.TestCase):
         )
         with patch(
             "app.services.scan_pipeline.get_settings",
-            return_value=SimpleNamespace(ai_scanning_enabled=False, openai_api_key=None),
+            return_value=SimpleNamespace(
+                ai_scanning_enabled=False, openai_api_key=None, scanner_service_url=None
+            ),
         ):
             result = asyncio.run(pipeline.run(metadata))
         self.assertEqual(result.engine_version, "scanner-suite-test")

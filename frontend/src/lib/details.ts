@@ -5,6 +5,8 @@ export interface Vulnerability {
   id: string; rule_id: string; file_path: string; line: number; severity: string;
   message: string; resolved: boolean; created_at: string; scan_id: string;
 }
+export type FindingGroup = 'project' | 'image';
+export const IMAGE_RULE_PATTERN = 'trivy.image.%';
 
 export async function loadRepositories(): Promise<Repository[]> {
   if (!supabase) throw new Error('Supabase is not configured.');
@@ -14,13 +16,33 @@ export async function loadRepositories(): Promise<Repository[]> {
   return data ?? [];
 }
 
-export async function loadVulnerabilities(): Promise<Vulnerability[]> {
-  if (!supabase) throw new Error('Supabase is not configured.');
-  const { data, error } = await supabase.from('findings')
-    .select('id,rule_id,file_path,line,severity,message,resolved,created_at,scan_id')
-    .eq('resolved', false).order('created_at', { ascending: false }).limit(100);
-  if (error) throw new Error('Unable to load vulnerability logs. Please try again.');
-  return data ?? [];
+export async function loadVulnerabilities(group: FindingGroup): Promise<Vulnerability[]> {
+  const client = supabase;
+  if (!client) throw new Error('Supabase is not configured.');
+  const levels = ['critical', 'high', 'medium', 'low', 'info'];
+  const results = await Promise.all(levels.map(level => {
+    const query = client.from('findings')
+      .select('id,rule_id,file_path,line,severity,message,resolved,created_at,scan_id')
+      .eq('resolved', false).eq('severity', level);
+    const scoped = group === 'image'
+      ? query.like('rule_id', IMAGE_RULE_PATTERN)
+      : query.not('rule_id', 'like', IMAGE_RULE_PATTERN);
+    return scoped.order('created_at', { ascending: false }).limit(200);
+  }));
+  if (results.some(result => result.error)) throw new Error('Unable to load finding logs. Please try again.');
+  return results.flatMap(result => result.data ?? []);
+}
+
+export function findingGroup(ruleId: string): FindingGroup {
+  return ruleId.startsWith('trivy.image.') ? 'image' : 'project';
+}
+
+export function findingSource(ruleId: string): string {
+  if (findingGroup(ruleId) === 'image') return 'Base image package';
+  if (ruleId.startsWith('trivy.')) return 'Dependency package';
+  if (ruleId.startsWith('semgrep.')) return 'Code pattern';
+  if (ruleId.startsWith('trufflehog.')) return 'Possible secret';
+  return 'Other finding';
 }
 
 export const sampleFindings: Vulnerability[] = [
