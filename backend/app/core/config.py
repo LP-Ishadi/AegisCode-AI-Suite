@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
     github_webhook_secret: SecretStr | None = None
+    github_app_id: str = ""
+    github_app_private_key_b64: SecretStr | None = None
+    ai_scanning_enabled: bool = False
+    scanners_enabled: bool = False
+    openai_model: str = Field(default="gpt-4o", max_length=80)
+    scan_max_files: int = Field(default=80, ge=1, le=299)
+    scan_max_diff_chars: int = Field(default=100_000, ge=1000, le=180_000)
     redis_url: SecretStr | None = None
     max_webhook_bytes: int = Field(default=1_048_576, ge=1024, le=5_242_880)
 

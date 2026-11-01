@@ -139,6 +139,8 @@ class SourceBundle(StrictModel):
     commit_sha: Sha
     diff: str = Field(min_length=1, max_length=200_000)
     files: list[str] = Field(default_factory=list, max_length=1000)
+    line_ranges: dict[str, list[tuple[int, int]]] = Field(default_factory=dict)
+    local_findings: list[Finding] = Field(default_factory=list, max_length=1000)
 
 
 class ScanResult(StrictModel):

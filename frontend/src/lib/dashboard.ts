@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient';
 export type ReviewStatus = 'passed' | 'action_required' | 'scanning' | 'queued' | 'failed';
 export interface PullRequest {
   id: string; repository: string; number: number; title: string;
-  author: string; status: ReviewStatus; riskTags: string[]; updatedAt: string;
+  author: string; status: ReviewStatus; riskTags: string[]; updatedAt: string; latestScanId?: string | null;
 }
 export interface DashboardData {
   totalPRs: number; activeVulnerabilities: number; repositoryCount: number;
@@ -17,7 +17,7 @@ export function securityScore(data: Pick<DashboardData, 'passedPRs' | 'reviewedP
 export async function loadDashboard(): Promise<DashboardData> {
   if (!supabase) throw new Error('Add your public Supabase configuration to connect this workspace.');
   const [prs, repositories, vulnerabilities, passed, reviewed] = await Promise.all([
-    supabase.from('pull_requests').select('id,number,title,author,status,risk_tags,updated_at,repositories(full_name)', { count: 'exact' }).order('updated_at', { ascending: false }).limit(50),
+    supabase.from('pull_requests').select('id,number,title,author,status,risk_tags,updated_at,latest_scan_id,repositories(full_name)', { count: 'exact' }).order('updated_at', { ascending: false }).limit(50),
     supabase.from('repositories').select('id', { count: 'exact', head: true }),
     supabase.from('findings').select('id', { count: 'exact', head: true }).eq('resolved', false),
     supabase.from('pull_requests').select('id', { count: 'exact', head: true }).eq('status', 'passed'),
@@ -37,7 +37,7 @@ export async function loadDashboard(): Promise<DashboardData> {
       return {
         id: row.id, repository: repository ?? 'Unknown repository', number: row.number,
         title: row.title, author: row.author, status: row.status, riskTags: row.risk_tags,
-        updatedAt: row.updated_at,
+        updatedAt: row.updated_at, latestScanId: row.latest_scan_id,
       };
     }),
   };

@@ -1,4 +1,4 @@
--- Run with psql ON_ERROR_STOP after both migrations in a disposable test database.
+-- Run with psql ON_ERROR_STOP after all migrations in a disposable test database.
 -- Everything is rolled back; no production credentials or external calls required.
 begin;
 set local role service_role;
@@ -21,7 +21,7 @@ begin
   begin
     perform public.enqueue_scan(did,payload || '{"installation_id":999}'::jsonb);
     raise exception 'Unauthorized installation accepted';
-  exception when insufficient_privilege then null;
+  exception when sqlstate 'PT403' then null;
   end;
   if exists(select 1 from public.webhook_deliveries where delivery_id=did) then
     raise exception 'Unauthorized event left a receipt';

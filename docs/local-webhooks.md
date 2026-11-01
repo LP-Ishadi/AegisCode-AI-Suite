@@ -155,9 +155,8 @@ supplies them too; visiting the webhook endpoint in a browser sends GET and yiel
 | Ngrok error / 502 | Check agent, forwarding port and running backend |
 | HTML instead of JSON | Tunnel/interstitial/access policy response, not API success |
 
-**Current boundary:** queueing and worker lifecycle are implemented. Apply the
-[dispatch migration and setup](scan-dispatch.md) before PR tests. The worker's source
-and AI adapters remain stubs and fail explicitly until implemented. Duplicate receipts
-are handled durably in Supabase. No code is cloned or PR comments posted by the stubs.
+**Scan pipeline:** queueing, source fetching and OpenAI diff review are implemented.
+Follow [live pipeline setup](live-scan-pipeline.md) before real PR scans. Duplicate
+receipts are handled durably in Supabase. No code is cloned or PR comments posted.
 
 HMAC reference: [GitHub signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).

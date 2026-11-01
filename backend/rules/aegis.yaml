@@ -1,0 +1,142 @@
+rules:
+  # Keep this bundle local and versioned so every PR is checked with the same rules.
+  - id: aegis.python-eval
+    languages: [python]
+    severity: ERROR
+    message: Dynamic eval can execute attacker-controlled Python if its input is untrusted.
+    pattern: eval(...)
+
+  - id: aegis.python-exec
+    languages: [python]
+    severity: ERROR
+    message: Dynamic exec can execute attacker-controlled Python if its input is untrusted.
+    pattern: exec(...)
+
+  - id: aegis.python-pickle-deserialization
+    languages: [python]
+    severity: ERROR
+    message: Pickle can execute code while loading data. Review the trust boundary.
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: _pickle.loads(...)
+      - pattern: _pickle.load(...)
+
+  - id: aegis.python-unsafe-yaml-load
+    languages: [python]
+    severity: ERROR
+    message: This YAML loader can construct arbitrary Python objects. Use safe_load or SafeLoader.
+    pattern-either:
+      - pattern: yaml.unsafe_load(...)
+      - pattern: yaml.load(..., Loader=yaml.Loader)
+      - pattern: yaml.load(..., Loader=yaml.UnsafeLoader)
+      - pattern: yaml.load(..., Loader=Loader)
+      - pattern: yaml.load(..., Loader=UnsafeLoader)
+
+  - id: aegis.python-subprocess-shell
+    languages: [python]
+    severity: WARNING
+    message: A shell interprets this command. Check that no untrusted input reaches it.
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+      - pattern: subprocess.check_call(..., shell=True, ...)
+      - pattern: subprocess.check_output(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+
+  - id: aegis.python-requests-disable-tls
+    languages: [python]
+    severity: ERROR
+    message: Disabling TLS certificate verification permits a network attacker to impersonate the server.
+    pattern-either:
+      - pattern: requests.get(..., verify=False, ...)
+      - pattern: requests.post(..., verify=False, ...)
+      - pattern: requests.put(..., verify=False, ...)
+      - pattern: requests.delete(..., verify=False, ...)
+      - pattern: requests.request(..., verify=False, ...)
+      - pattern: requests.Session().get(..., verify=False, ...)
+
+  - id: aegis.python-jwt-no-signature
+    languages: [python]
+    severity: ERROR
+    message: JWT signature verification is disabled. An attacker may forge a token.
+    pattern-either:
+      - pattern: 'jwt.decode(..., options={"verify_signature": False}, ...)'
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+
+  - id: aegis.python-flask-debug
+    languages: [python]
+    severity: WARNING
+    message: Flask's debug server must not be exposed in production.
+    patterns:
+      - pattern: $APP.run(..., debug=True, ...)
+      - pattern-either:
+          - pattern-inside: |
+              $APP = Flask(...)
+              ...
+          - pattern-inside: |
+              $APP = flask.Flask(...)
+              ...
+
+  - id: aegis.python-django-debug
+    languages: [python]
+    severity: ERROR
+    message: Django DEBUG reveals internal application details when enabled in production.
+    paths:
+      include: ["**/settings.py", "settings.py"]
+    pattern: DEBUG = True
+
+  - id: aegis.python-web-input-to-shell
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: HTTP request data reaches a shell command. Use an argument list and validate the input.
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.form.get(...)
+      - pattern: request.values.get(...)
+      - pattern: request.query_params.get(...)
+    pattern-sinks:
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+      - patterns:
+          - pattern: subprocess.$CALL($COMMAND, ..., shell=True, ...)
+          - focus-metavariable: $COMMAND
+
+  - id: aegis.javascript-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Dynamic eval can execute attacker-controlled JavaScript if its input is untrusted.
+    pattern: eval(...)
+
+  - id: aegis.javascript-new-function
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: The Function constructor evaluates a string as JavaScript code.
+    pattern: new Function(...)
+
+  - id: aegis.javascript-insecure-tls
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Disabling TLS certificate validation permits a network attacker to impersonate the server.
+    pattern-either:
+      - pattern: 'rejectUnauthorized: false'
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+
+  - id: aegis.javascript-express-input-to-shell
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Express request data reaches a shell command. Avoid shell execution or validate input.
+    pattern-sources:
+      - pattern: req.body.$FIELD
+      - pattern: req.query.$FIELD
+      - pattern: req.params.$FIELD
+      - pattern: req.body[$FIELD]
+      - pattern: req.query[$FIELD]
+      - pattern: req.params[$FIELD]
+    pattern-sinks:
+      - pattern: child_process.exec(...)
+      - pattern: child_process.execSync(...)
+      - pattern: require("child_process").exec(...)
+      - pattern: require("child_process").execSync(...)

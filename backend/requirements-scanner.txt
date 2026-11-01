@@ -1,2 +1,3 @@
 # Install only in the future isolated scanner image, never the API image.
-semgrep>=1.115,<2
+semgrep==1.116.0
+fastapi==0.115.12

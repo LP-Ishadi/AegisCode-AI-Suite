@@ -3,6 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import { Activity, ArrowUpRight, LayoutDashboard, RefreshCw } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { SignIn } from './components/SignIn';
+import { ManualReview } from './components/ManualReview';
 import Dashboard from './pages';
 import Analytics from './pages/analytics';
 import { demoMode, supabase } from './lib/supabaseClient';
@@ -14,6 +15,7 @@ const emptyData: DashboardData = { totalPRs: 0, activeVulnerabilities: 0, reposi
 
 export default function App() {
   const [page, setPage] = useState<'overview' | 'analytics'>('overview');
+  const [manualScanId, setManualScanId] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(!demoMode && !!supabase);
   const [authError, setAuthError] = useState('');
@@ -22,10 +24,11 @@ export default function App() {
   const [error, setError] = useState('');
   const generation = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (background = false) => {
     if (demoMode) return;
     const current = ++generation.current;
-    setLoading(true); setError('');
+    if (!background) setLoading(true);
+    setError('');
     try {
       const result = await loadDashboard();
       if (current === generation.current) setData(result);
@@ -57,9 +60,18 @@ export default function App() {
 
   useEffect(() => {
     if (demoMode) return;
-    if (session) { void refresh(); }
-    else { ++generation.current; setData(emptyData); setError(''); setLoading(false); }
-    return () => { ++generation.current; };
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function poll() {
+      if (!stopped && document.visibilityState !== 'hidden') await refresh(true);
+      if (!stopped) timer = setTimeout(() => void poll(), 15000);
+    }
+    if (session) {
+      void refresh().finally(() => {
+        if (!stopped) timer = setTimeout(() => void poll(), 15000);
+      });
+    } else { ++generation.current; setData(emptyData); setError(''); setLoading(false); }
+    return () => { stopped = true; clearTimeout(timer); ++generation.current; };
   }, [session, refresh]);
 
   async function signOut() {
@@ -80,7 +92,7 @@ export default function App() {
         {demoMode && <div className="mb-6 flex items-center gap-2 rounded-lg border border-indigo-300/10 bg-indigo-300/4 px-4 py-3 text-xs text-indigo-200/70"><span className="size-1.5 shrink-0 rounded-full bg-indigo-300" />Demo workspace — sample reviews and metrics. No repositories are connected.</div>}
         {error && <div role="alert" className="mb-5 rounded-lg border border-rose-300/20 bg-rose-300/5 p-4 text-sm text-rose-200">{error}</div>}
         {loading && <p role="status" className="mb-4 text-xs text-zinc-400">Loading your cloud workspace…</p>}
-        {page === 'overview' ? <Dashboard data={data} demo={demoMode} /> : <Analytics data={data} />}
+        {manualScanId && session ? <ManualReview scanId={manualScanId} session={session} onClose={() => setManualScanId(null)} onComplete={() => void refresh(true)} /> : page === 'overview' ? <Dashboard data={data} demo={demoMode} onManualReview={setManualScanId} /> : <Analytics data={data} />}
         <footer className="mt-7 flex flex-wrap justify-between gap-3 text-[10px] text-zinc-600"><span>AegisCode AI Suite · Secure code starts here</span><span>{demoMode ? 'Sample data · Foundation preview' : 'Supabase cloud · Session in memory'}</span></footer>
       </>}
     </main>
