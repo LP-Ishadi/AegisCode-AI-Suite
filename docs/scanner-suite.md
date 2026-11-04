@@ -61,7 +61,14 @@ Manual AI review remains available after a completed or failed worker scan.
    scanner output.
 
 The first Trivy scan may need time to download its vulnerability database. The
-worker keeps this database in the `trivy-cache` volume. No dependency package
+scanner keeps this database in the `trivy-cache` volume. Scanner subprocesses
+also use per-command temporary directories on that volume, removed when each
+command finishes, so Trivy downloads do not fill the scanner's 512 MB `/tmp`.
+Trivy also keeps analyzed image layers in its filesystem cache; image scans are
+serialized to avoid cache lock conflicts. A new image may still take longer on
+its first scan. If it times out, the scan remains failed and a new PR event is
+needed after the cache or network issue is resolved.
+No dependency package
 installation or repository script execution occurs while scanning.
 
 ## Coverage and remaining work

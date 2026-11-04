@@ -18,7 +18,18 @@ the existing root callback URL and stores only the scan ID in that tab until the
 redirect completes; no additional Supabase redirect URL is needed.
 The review screen displays a
 structured prompt containing the redacted PR diff, security rules, allowed tools,
-and the JSON output schema. Paste the request into one AI conversation. Paste its
+and the JSON output schema. The first prompt now also includes bounded full text
+for changed files and likely related unchanged files at the exact PR commit.
+Selection uses imports, matching file names, and directory proximity. This is a
+context hint, not a guarantee that every relevant file was selected. The prompt's
+`auto_context.included` entries show what was supplied; `auto_context.omitted`
+shows files skipped by file or size limits. `coverage_pending` lists changed files
+the model must request with `read_file` before submitting an empty final answer.
+Every manual review must also make at least one successful `read_file` tool call
+before any final answer, even when all changed files were supplied automatically.
+The backend rejects an early final answer with HTTP 422 and keeps the review active.
+If a changed file cannot be read within the tool limit, the manual review cannot
+finish clean. Paste the request into one AI conversation. Paste its
 JSON response back into the screen. The backend validates the reply and either
 fetches a tool result or commits final findings. Repeat until the final response.
 Return to the dashboard tab and refresh to see the saved final findings.
@@ -33,6 +44,11 @@ cannot write to GitHub or Supabase. Final findings must refer to a real file and
 line at that commit. An empty final finding set means only that this review found
 no supported issue; it does not certify the repository as secure.
 
+Automatic context includes at most eight files total, of which at most four are
+related unchanged files, with a total of 64,000 characters. Individual reads
+still have the 16,000-character limit. Existing manual reviews keep their stored
+prompts; start a new review on a new scan to see automatic context.
+
 The database stores each response, tool summary, and the next redacted prompt so
 the exchange can resume after a browser refresh. A prompt containing a read file
 also contains its redacted source text. Redaction is best effort, so inspect a
@@ -45,3 +61,5 @@ appropriate retention policy before using this on sensitive repositories.
 The [scanner suite](scanner-suite.md) runs in the separate PR worker and writes
 findings to the same scan records. This manual review can follow either a completed
 or failed scanner run. SonarQube remains a later integration.
+The separate automated OpenAI diff adapter currently has no repository tools; this
+manual-review tool requirement does not add tool calls to that adapter.
