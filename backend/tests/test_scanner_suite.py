@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.services.scanner_suite import (
     parse_semgrep,
     parse_trivy_image,
     parse_trufflehog,
+    run_command,
     semgrep_rule_messages,
 )
 
@@ -31,6 +33,16 @@ class ScannerTests(unittest.TestCase):
 
     def tearDown(self):
         self.directory.cleanup()
+
+    def test_scanner_command_uses_cleaned_cache_volume_scratch(self):
+        with tempfile.TemporaryDirectory() as cache:
+            with patch("app.services.scanner_suite.SCRATCH_ROOT", Path(cache)):
+                output = asyncio.run(
+                    run_command([sys.executable, "-c", "import os; print(os.environ['TMPDIR'])"])
+                )
+            scratch_path = Path(output.decode().strip())
+            self.assertEqual(scratch_path.parent, Path(cache))
+            self.assertFalse(scratch_path.exists())
 
     def test_immutable_snapshot_from_git_blobs(self):
         metadata = ScanMetadata.model_construct(
@@ -180,6 +192,11 @@ class ScannerTests(unittest.TestCase):
         )
         self.assertIn("--disable-nosem", semgrep_args)
         self.assertIn("--no-git-ignore", semgrep_args)
+        trivy_calls = [call for call in run.call_args_list if call.args[0][0] == "trivy"]
+        self.assertEqual(len(trivy_calls), 2)
+        for call in trivy_calls:
+            args = call.args[0]
+            self.assertEqual(args[args.index("--cache-backend") + 1], "fs")
 
     def test_scanner_pipeline_finishes_without_openai_key(self):
         metadata = ScanMetadata.model_construct(commit_sha="a" * 40)

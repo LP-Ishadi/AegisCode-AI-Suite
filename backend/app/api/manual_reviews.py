@@ -19,6 +19,8 @@ from app.services.manual_review import (
     checked_findings,
     initial_prompt,
     prompt,
+    require_context_for_clean,
+    require_file_read,
 )
 
 router = APIRouter(prefix="/manual-reviews", tags=["manual reviews"])
@@ -89,42 +91,55 @@ def metadata_for_scan(scan_id: UUID) -> ScanMetadata:
     return ScanMetadata.model_validate(rows[0]["payload"])
 
 
+def existing_review_id(service, scan_id: UUID) -> str | None:
+    rows = (
+        service.table("manual_reviews")
+        .select("id")
+        .eq("scan_id", str(scan_id))
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0]["id"] if rows else None
+
+
 @router.post("/scans/{scan_id}")
 async def start_review(scan_id: UUID, user: AuthenticatedUser):
     scan = await asyncio.to_thread(operator_scan, user, scan_id)
     if scan["status"] not in ("completed", "failed"):
         raise HTTPException(409, "Wait for the worker scan to finish")
     service = get_service_client()
-    existing = await asyncio.to_thread(
-        lambda: (
-            service.table("manual_reviews")
-            .select("id")
-            .eq("scan_id", str(scan_id))
-            .limit(1)
-            .execute()
-            .data
-        )
-    )
-    if existing:
-        return {"id": existing[0]["id"]}
     try:
+        existing = await asyncio.to_thread(existing_review_id, service, scan_id)
+        if existing:
+            return {"id": existing}
         metadata = await asyncio.to_thread(metadata_for_scan, scan_id)
         first = await initial_prompt(metadata)
-        row = await asyncio.to_thread(
-            lambda: (
-                service.table("manual_reviews")
-                .insert(
-                    {
-                        "organization_id": scan["organization_id"],
-                        "scan_id": str(scan_id),
-                        "prompt": first,
-                        "created_by": str(user.user_id),
-                    }
+        try:
+            row = await asyncio.to_thread(
+                lambda: (
+                    service.table("manual_reviews")
+                    .insert(
+                        {
+                            "organization_id": scan["organization_id"],
+                            "scan_id": str(scan_id),
+                            "prompt": first,
+                            "created_by": str(user.user_id),
+                        }
+                    )
+                    .execute()
+                    .data
                 )
-                .execute()
-                .data
             )
-        )
+        except APIError as exc:
+            if exc.code != "23505":
+                raise
+            # Two tabs (or React development mode) can start the same scan at
+            # once. The unique scan_id means one insert wins; reuse that row.
+            existing = await asyncio.to_thread(existing_review_id, service, scan_id)
+            if existing:
+                return {"id": existing}
+            raise
     except AdapterError as exc:
         raise HTTPException(422, f"Cannot prepare review: {exc.code}") from exc
     except (APIError, HTTPError, ValueError) as exc:
@@ -158,9 +173,21 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
         tools = RepositoryTools(metadata)
         await tools.ready()
         reply = submission.response
+        pending = list(review["prompt"].get("coverage_pending", []))
+        file_read_completed = review["prompt"].get("file_read_completed") is True
         if reply.kind == "tool":
             result = await tools.execute(reply.tool)
-            next_prompt = prompt(metadata, "", step=submission.step + 1, tool_result=result)
+            if reply.tool.name == "read_file" and reply.tool.path in pending:
+                pending.remove(reply.tool.path)
+            file_read_completed = file_read_completed or reply.tool.name == "read_file"
+            next_prompt = prompt(
+                metadata,
+                "",
+                step=submission.step + 1,
+                tool_result=result,
+                coverage_pending=pending,
+                file_read_completed=file_read_completed,
+            )
             summary = {
                 "name": reply.tool.name,
                 "path": reply.tool.path,
@@ -168,6 +195,8 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
             }
             findings = []
         else:
+            require_file_read(file_read_completed)
+            require_context_for_clean(reply.findings, pending)
             findings = await checked_findings(metadata, reply.findings, tools)
             next_prompt = {"status": "completed"}
             summary = {"finding_count": len(findings)}

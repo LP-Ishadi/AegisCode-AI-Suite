@@ -5,6 +5,7 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.models.dispatch import ScanResult
 from app.models.schemas import Finding, Severity
@@ -18,6 +19,8 @@ SAFE_ID = re.compile(r"[^A-Za-z0-9_.:-]+")
 FROM_LINE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)", re.IGNORECASE)
 IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,254}$")
 PUBLIC_REGISTRIES = {"docker.io", "index.docker.io", "ghcr.io", "quay.io", "registry.k8s.io"}
+SCRATCH_ROOT = Path("/cache")
+TRIVY_LOCK = asyncio.Lock()
 
 
 def allowed_image_reference(reference: str) -> bool:
@@ -226,44 +229,53 @@ def parse_trufflehog(output: bytes, snapshot: Snapshot) -> list[Finding]:
 
 async def run_command(argv: list[str], *, timeout: int = 35) -> bytes:
     try:
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env={
-                "PATH": "/usr/local/bin:/usr/bin:/bin",
-                "HOME": "/tmp",
-                "XDG_CACHE_HOME": "/tmp/cache",
-                "TRIVY_CACHE_DIR": "/cache/trivy",
-            },
-        )
+        # Trivy can need hundreds of MB while downloading its DB. Keep each
+        # tool's scratch files on the dedicated cache volume, then remove them.
+        scratch = TemporaryDirectory(prefix="aegis-tool-", dir=SCRATCH_ROOT)
     except OSError:
         raise AdapterError("scanner_unavailable") from None
-    try:
+    with scratch:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={
+                    "PATH": "/usr/local/bin:/usr/bin:/bin",
+                    "HOME": "/tmp",
+                    "XDG_CACHE_HOME": "/tmp/cache",
+                    "TRIVY_CACHE_DIR": "/cache/trivy",
+                    "TMPDIR": scratch.name,
+                },
+            )
+        except OSError:
+            raise AdapterError("scanner_unavailable") from None
 
-        async def collect():
-            output = bytearray()
-            while chunk := await process.stdout.read(65_536):
-                if len(output) + len(chunk) > OUTPUT_LIMIT:
-                    raise AdapterError("scanner_unavailable")
-                output.extend(chunk)
+        try:
+
+            async def collect():
+                output = bytearray()
+                while chunk := await process.stdout.read(65_536):
+                    if len(output) + len(chunk) > OUTPUT_LIMIT:
+                        raise AdapterError("scanner_unavailable")
+                    output.extend(chunk)
+                await process.wait()
+                return bytes(output)
+
+            output = await asyncio.wait_for(collect(), timeout)
+            if process.returncode != 0:
+                raise AdapterError("scanner_unavailable", retryable=True)
+            return output
+        except (TimeoutError, AdapterError) as exc:
+            if process.returncode is None:
+                process.kill()
             await process.wait()
-            return bytes(output)
-
-        output = await asyncio.wait_for(collect(), timeout)
-        if process.returncode != 0:
-            raise AdapterError("scanner_unavailable", retryable=True)
-        return output
-    except (TimeoutError, AdapterError) as exc:
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-        raise AdapterError("scanner_unavailable", retryable=True) from exc
-    except asyncio.CancelledError:
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-        raise
+            raise AdapterError("scanner_unavailable", retryable=True) from exc
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
 
 
 class ScannerSuite:
@@ -275,10 +287,10 @@ class ScannerSuite:
             raise AdapterError("source_incomplete")
         image_refs = image_references(snapshot)
         unique_images = sorted({reference for _, _, reference in image_refs})
-        trivy_lock = asyncio.Semaphore(1)
-
         async def trivy_command(argv: list[str]) -> bytes:
-            async with trivy_lock:
+            # The filesystem cache retains analyzed image layers across scans.
+            # Serialize all requests because Trivy's cache database uses a lock.
+            async with TRIVY_LOCK:
                 return await run_command(argv, timeout=75)
 
         commands = [
@@ -306,7 +318,7 @@ class ScannerSuite:
                     "--format",
                     "json",
                     "--cache-backend",
-                    "memory",
+                    "fs",
                     "--quiet",
                     "--disable-telemetry",
                     root,
@@ -329,7 +341,7 @@ class ScannerSuite:
                         "--format",
                         "json",
                         "--cache-backend",
-                        "memory",
+                        "fs",
                         "--quiet",
                         "--disable-telemetry",
                         reference,

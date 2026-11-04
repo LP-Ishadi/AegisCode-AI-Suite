@@ -2,6 +2,8 @@
 
 import base64
 import binascii
+import json
+import re
 from pathlib import PurePosixPath
 
 from pydantic import Field, model_validator
@@ -9,11 +11,15 @@ from pydantic import Field, model_validator
 from app.core.config import get_settings
 from app.models.dispatch import ScanMetadata
 from app.models.schemas import Finding, StrictModel
+from app.services.adapter_errors import AdapterError
 from app.services.github_source import GitHubAPI, GitHubSourceProvider
 from app.services.redaction import redact
 
 MAX_FILE_CHARS = 16_000
 MAX_TREE_FILES = 2_000
+MAX_AUTO_CONTEXT_CHARS = 64_000
+MAX_AUTO_FILES = 8
+MAX_RELATED_FILES = 4
 SPECIAL_NAMES = {
     "Dockerfile",
     "package.json",
@@ -66,6 +72,16 @@ def safe_path(value: str) -> bool:
     )
 
 
+def require_context_for_clean(findings: list[Finding], pending: list[str]) -> None:
+    if not findings and pending:
+        raise ValueError("Read the pending changed files before an empty final review")
+
+
+def require_file_read(completed: bool) -> None:
+    if not completed:
+        raise ValueError("Call read_file on at least one repository file before a final review")
+
+
 def prompt(
     metadata: ScanMetadata,
     diff: str,
@@ -73,6 +89,9 @@ def prompt(
     step: int,
     tool_result: dict | None = None,
     local_findings: list[dict] | None = None,
+    auto_context: dict | None = None,
+    coverage_pending: list[str] | None = None,
+    file_read_completed: bool = False,
 ) -> dict:
     return {
         "version": "manual-review-v1",
@@ -83,6 +102,12 @@ def prompt(
             "context needed to support findings. Do not invent files, lines, exploits, or "
             "scanner results. Report concrete, actionable vulnerabilities; no generic advice. "
             "If evidence is insufficient, request a tool or finish without unsupported findings. "
+            "Read the supplied file context before deciding. Paths listed as omitted were not "
+            "reviewed; request any needed file with read_file before concluding. "
+            "You must request read_file for at least one repository file before any final "
+            "answer, even if the supplied context appears sufficient. "
+            "An empty final answer is not accepted while changed files remain in "
+            "coverage_pending. "
             "Never repeat credentials or secret values. Output one JSON object only."
         ),
         "review": {
@@ -119,6 +144,9 @@ def prompt(
         "schema_rule": "For kind=tool provide tool only; for kind=final provide findings only.",
         "pr_diff": diff if step == 0 else "See the initial prompt for the PR diff.",
         "local_findings": local_findings if step == 0 else None,
+        "auto_context": auto_context if step == 0 else None,
+        "coverage_pending": coverage_pending or [],
+        "file_read_completed": file_read_completed,
         "tool_result": tool_result,
     }
 
@@ -204,13 +232,115 @@ class RepositoryTools:
         return await self.read_file(call.path)
 
 
+def related_paths(changed: list[str], paths: list[str], contents: list[str]) -> list[str]:
+    """Rank likely context; paths alone are hints, not proof of a code relationship."""
+    changed_set = set(changed)
+    modules = set()
+    for content in contents:
+        modules.update(re.findall(r"(?m)^\s*(?:from|import)\s+([\w.]+)", content))
+        modules.update(re.findall(r"(?:require\(|from\s+)[\s\"']*([./\w-]+)", content))
+    module_parts = {part for module in modules for part in module.split(".") if part}
+
+    def score(path: str) -> tuple[int, str]:
+        candidate = PurePosixPath(path)
+        stem = candidate.stem.removeprefix("test_").removesuffix("_test")
+        value = 0
+        if stem in module_parts and stem not in {"index", "__init__"}:
+            value += 6
+        for changed_path in changed:
+            source = PurePosixPath(changed_path)
+            source_stem = source.stem.removeprefix("test_").removesuffix("_test")
+            if stem == source_stem and path != changed_path:
+                value = max(value, 8)
+            if candidate.parent == source.parent:
+                value = max(value, 3)
+            if candidate.parent == source.parent.parent and candidate.name in SPECIAL_NAMES:
+                value = max(value, 2)
+        return value, path
+
+    ranked = sorted((p for p in paths if p not in changed_set), key=lambda p: (-score(p)[0], p))
+    return [p for p in ranked if score(p)[0] > 0]
+
+
+async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
+    """Fetch a small, explicit set of files at the immutable PR commit."""
+    patches = json.loads(diff)
+    changed = [p["file"] for p in patches if p.get("status") != "removed"]
+    paths = await tools.list_files()
+    # A missing changed file means the commit snapshot is incomplete. Do not
+    # prepare a prompt that could be mistaken for a complete review.
+    if any(path not in paths for path in changed):
+        raise AdapterError("source_incomplete")
+    included: list[dict] = []
+    omitted: list[dict] = []
+    total_chars = 0
+    for path in changed:
+        if len(included) >= MAX_AUTO_FILES:
+            omitted.append({"path": path, "reason": "file_limit"})
+            continue
+        try:
+            file = await tools.read_file(path)
+        except (ValueError, UnicodeError):
+            omitted.append({"path": path, "reason": "unsupported_or_large"})
+            continue
+        size = len(file["content"])
+        if total_chars + size > MAX_AUTO_CONTEXT_CHARS:
+            omitted.append({"path": path, "reason": "context_limit"})
+            continue
+        included.append({"path": path, "kind": "changed", "content": file["content"]})
+        total_chars += size
+    related = related_paths(changed, paths, [f["content"] for f in included])
+    related_count = 0
+    for path in related:
+        if related_count >= MAX_RELATED_FILES or len(included) >= MAX_AUTO_FILES:
+            break
+        try:
+            file = await tools.read_file(path)
+        except (ValueError, UnicodeError):
+            omitted.append({"path": path, "reason": "unsupported_or_large"})
+            continue
+        size = len(file["content"])
+        if total_chars + size > MAX_AUTO_CONTEXT_CHARS:
+            omitted.append({"path": path, "reason": "context_limit"})
+            continue
+        included.append({"path": path, "kind": "related_unchanged", "content": file["content"]})
+        total_chars += size
+        related_count += 1
+    included_paths = {item["path"] for item in included}
+    return {
+        "commit": tools.metadata.commit_sha,
+        "selection": (
+            "Changed files, then likely related unchanged files by imports, "
+            "matching names, or directory"
+        ),
+        "limits": {
+            "files": MAX_AUTO_FILES,
+            "related_files": MAX_RELATED_FILES,
+            "total_characters": MAX_AUTO_CONTEXT_CHARS,
+        },
+        "included": included,
+        "omitted": omitted,
+        "pending_changed_files": [item["path"] for item in omitted if item["path"] in changed],
+        "related_candidates_not_included": sum(p not in included_paths for p in related),
+        "other_repository_files": "Use list_files and read_file to inspect more paths",
+    }
+
+
 async def initial_prompt(metadata: ScanMetadata) -> dict:
     source = await GitHubSourceProvider().fetch(metadata)
+    tools = RepositoryTools(metadata)
+    await tools.ready()
+    try:
+        context = await automatic_context(tools, source.diff)
+    except ValueError:
+        raise AdapterError("source_incomplete") from None
     return prompt(
         metadata,
         source.diff,
         step=0,
         local_findings=[f.model_dump(mode="json") for f in source.local_findings],
+        auto_context=context,
+        coverage_pending=context["pending_changed_files"],
     )
 
 
