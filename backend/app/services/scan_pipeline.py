@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
 from app.services.adapter_errors import AdapterError
 from app.services.ai_scanner import AIScanEngine as AIScanEngine
+from app.services.context_review_engine import ContextReviewEngine
 from app.services.github_source import GitHubSourceProvider as GitHubSourceProvider
 from app.services.github_source import SourceUnavailable as SourceUnavailable
 from app.services.github_source import authorize_repository
@@ -47,7 +48,7 @@ class ScannerPipeline:
             if settings.scanner_service_url else None
         )
         self.source = source or GitHubSourceProvider()
-        self.engine = engine or AIScanEngine()
+        self.engine = engine or ContextReviewEngine()
         self.authorize = authorize
 
     async def run(self, metadata: ScanMetadata) -> ScanResult:
@@ -68,10 +69,10 @@ class ScannerPipeline:
                 source = await self.source.fetch(metadata)
                 if source.commit_sha != metadata.commit_sha:
                     raise ValueError("Fetched AI source does not match the queued commit")
-                ai_result = await self.engine.analyze(metadata, source)
+                ai_result = await self.engine.analyze(metadata, source, findings)
                 seen = {(f.rule_id, f.file_path, f.line) for f in findings}
                 findings.extend(
                     f for f in ai_result.findings if (f.rule_id, f.file_path, f.line) not in seen
                 )
-                engine_version += "+openai-diff"
+                engine_version += "+openai-context"
         return ScanResult(findings=findings, engine_version=engine_version)

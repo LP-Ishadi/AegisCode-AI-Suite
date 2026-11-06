@@ -11,7 +11,7 @@ from pydantic import Field
 from app.core.security import AuthenticatedUser
 from app.database.supabase_client import get_service_client
 from app.models.dispatch import ScanMetadata
-from app.models.schemas import StrictModel
+from app.models.schemas import Finding, StrictModel
 from app.services.adapter_errors import AdapterError
 from app.services.manual_review import (
     ModelReply,
@@ -103,6 +103,18 @@ def existing_review_id(service, scan_id: UUID) -> str | None:
     return rows[0]["id"] if rows else None
 
 
+def scanner_findings_for_scan(service, scan_id: UUID) -> list[Finding]:
+    rows = (
+        service.table("findings")
+        .select("rule_id,file_path,line,severity,message")
+        .eq("scan_id", str(scan_id))
+        .limit(500)
+        .execute()
+        .data
+    )
+    return [Finding.model_validate(row) for row in rows]
+
+
 @router.post("/scans/{scan_id}")
 async def start_review(scan_id: UUID, user: AuthenticatedUser):
     scan = await asyncio.to_thread(operator_scan, user, scan_id)
@@ -114,7 +126,8 @@ async def start_review(scan_id: UUID, user: AuthenticatedUser):
         if existing:
             return {"id": existing}
         metadata = await asyncio.to_thread(metadata_for_scan, scan_id)
-        first = await initial_prompt(metadata)
+        scanner_findings = await asyncio.to_thread(scanner_findings_for_scan, service, scan_id)
+        first = await initial_prompt(metadata, scanner_findings, scan["status"])
         try:
             row = await asyncio.to_thread(
                 lambda: (

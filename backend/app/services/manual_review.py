@@ -9,11 +9,12 @@ from pathlib import PurePosixPath
 from pydantic import Field, model_validator
 
 from app.core.config import get_settings
-from app.models.dispatch import ScanMetadata
+from app.models.dispatch import ScanMetadata, SourceBundle
 from app.models.schemas import Finding, StrictModel
 from app.services.adapter_errors import AdapterError
 from app.services.github_source import GitHubAPI, GitHubSourceProvider
 from app.services.redaction import redact
+from app.services.review_evidence import scanner_evidence as summarize_scanner_evidence
 
 MAX_FILE_CHARS = 16_000
 MAX_TREE_FILES = 2_000
@@ -90,6 +91,7 @@ def prompt(
     tool_result: dict | None = None,
     local_findings: list[dict] | None = None,
     auto_context: dict | None = None,
+    scanner_evidence: dict | None = None,
     coverage_pending: list[str] | None = None,
     file_read_completed: bool = False,
 ) -> dict:
@@ -106,6 +108,8 @@ def prompt(
             "reviewed; request any needed file with read_file before concluding. "
             "You must request read_file for at least one repository file before any final "
             "answer, even if the supplied context appears sufficient. "
+            "Use scanner findings as leads; trace relevant changed code through callers, "
+            "permission checks, dependencies, and configuration before concluding. "
             "An empty final answer is not accepted while changed files remain in "
             "coverage_pending. "
             "Never repeat credentials or secret values. Output one JSON object only."
@@ -145,6 +149,7 @@ def prompt(
         "pr_diff": diff if step == 0 else "See the initial prompt for the PR diff.",
         "local_findings": local_findings if step == 0 else None,
         "auto_context": auto_context if step == 0 else None,
+        "scanner_evidence": scanner_evidence if step == 0 else None,
         "coverage_pending": coverage_pending or [],
         "file_read_completed": file_read_completed,
         "tool_result": tool_result,
@@ -326,10 +331,13 @@ async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
     }
 
 
-async def initial_prompt(metadata: ScanMetadata) -> dict:
-    source = await GitHubSourceProvider().fetch(metadata)
-    tools = RepositoryTools(metadata)
-    await tools.ready()
+async def prepared_prompt(
+    metadata: ScanMetadata,
+    source: SourceBundle,
+    tools: RepositoryTools,
+    scanner_findings: list[Finding] | None = None,
+    scanner_status: str = "completed",
+) -> dict:
     try:
         context = await automatic_context(tools, source.diff)
     except ValueError:
@@ -340,8 +348,22 @@ async def initial_prompt(metadata: ScanMetadata) -> dict:
         step=0,
         local_findings=[f.model_dump(mode="json") for f in source.local_findings],
         auto_context=context,
+        scanner_evidence=summarize_scanner_evidence(
+            scanner_findings or [], status=scanner_status
+        ),
         coverage_pending=context["pending_changed_files"],
     )
+
+
+async def initial_prompt(
+    metadata: ScanMetadata,
+    scanner_findings: list[Finding] | None = None,
+    scanner_status: str = "completed",
+) -> dict:
+    source = await GitHubSourceProvider().fetch(metadata)
+    tools = RepositoryTools(metadata)
+    await tools.ready()
+    return await prepared_prompt(metadata, source, tools, scanner_findings, scanner_status)
 
 
 async def checked_findings(metadata: ScanMetadata, findings: list[Finding], tools: RepositoryTools):

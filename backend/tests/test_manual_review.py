@@ -244,6 +244,7 @@ class ManualReviewTests(unittest.TestCase):
             ),
             patch.object(manual_reviews, "get_service_client", return_value=service),
             patch.object(manual_reviews, "metadata_for_scan", return_value=object()),
+            patch.object(manual_reviews, "scanner_findings_for_scan", return_value=[]),
             patch.object(manual_reviews, "initial_prompt", new=AsyncMock(return_value={})),
         ):
             result = asyncio.run(manual_reviews.start_review(scan_id, user))

@@ -18,7 +18,10 @@ the existing root callback URL and stores only the scan ID in that tab until the
 redirect completes; no additional Supabase redirect URL is needed.
 The review screen displays a
 structured prompt containing the redacted PR diff, security rules, allowed tools,
-and the JSON output schema. The first prompt now also includes bounded full text
+the JSON output schema, and a bounded summary of scanner findings. The summary
+keeps counts for every scanner finding but includes only a severity-ranked sample;
+the omitted count shows how many findings were not sent to the AI. The first prompt
+also includes bounded full text
 for changed files and likely related unchanged files at the exact PR commit.
 Selection uses imports, matching file names, and directory proximity. This is a
 context hint, not a guarantee that every relevant file was selected. The prompt's
@@ -61,5 +64,7 @@ appropriate retention policy before using this on sensitive repositories.
 The [scanner suite](scanner-suite.md) runs in the separate PR worker and writes
 findings to the same scan records. This manual review can follow either a completed
 or failed scanner run. SonarQube remains a later integration.
-The separate automated OpenAI diff adapter currently has no repository tools; this
-manual-review tool requirement does not add tool calls to that adapter.
+The scanner pipeline's automated OpenAI path now uses the same bounded file tools
+and review gate when an API key and repository authorization are configured. See
+[automated review architecture](ai-review-architecture.md) for current limits and
+the remaining accuracy work.

@@ -1,191 +1,151 @@
 # AegisCode AI Suite
 
-A Supabase-first foundation for secure, AI-assisted pull request review. FastAPI
-provides API security boundaries; React, TypeScript and Tailwind provide the dark
-dashboard. The durable worker supports authenticated GitHub diff fetching and OpenAI
-review; the separate worker also runs Semgrep, Trivy, and TruffleHog against a
-bounded repository snapshot. Claude and SonarQube remain unimplemented.
+AegisCode reviews GitHub pull requests for security issues. A GitHub App sends
+PR events to the backend; a durable worker fetches the exact commit and runs
+Semgrep, Trivy, and TruffleHog in a separate scanner container. Results are
+stored in Supabase and shown in a React dashboard. A separate manual review
+window lets an operator copy a structured prompt into an AI chat and submit
+its JSON reply. Automated AI review is optional and currently needs an API
+key; the scanner workflow does not.
 
-## Structure
+The project is an engineering case study. A finding is a lead for a developer
+to investigate. “No findings” does not mean the code is secure. A failed or
+incomplete scan must not be shown as clean.
 
-```text
-backend/
-  app/
-    api/           # Identity, repository reads, verified GitHub hooks
-    core/          # Settings, bearer auth and HMAC
-    database/      # Stateless Supabase clients
-    models/        # Validated scan/finding/review contracts
-    services/      # GitHub source, OpenAI review, dispatch and scanner suite
-    workers/       # Durable scan worker and optional Celery bootstrap
-    main.py
-  tests/
-  Dockerfile
-  requirements.txt
-  requirements-dev.txt
-  requirements-scanner.txt
-frontend/
-  public/
-  src/
-    components/    # Navigation, metric cards, PR table, sign-in
-    pages/         # Overview and analytics
-    lib/           # Supabase, cloud queries and demo fixtures
-    App.tsx
-supabase/migrations/ # Tenant schema, RLS and pgvector
-docs/architecture.md
-.github/workflows/ci.yml
-.env.example
+## What works now
+
+| Area | Current behavior |
+| --- | --- |
+| GitHub integration | Signed PR webhooks enqueue durable jobs; GitHub App installation access fetches a commit-pinned source snapshot. |
+| Scanners | Isolated Semgrep, Trivy, and TruffleHog scan bounded source. Trivy also checks referenced Docker base images; it does not scan the final built image. |
+| Results | Supabase stores scans and findings. The dashboard separates code/dependency findings from Docker image advisories. |
+| Manual AI review | A separate signed-in window exchanges structured JSON with a chat model, supports bounded repository file tools, and stores its review steps. |
+| Automated AI | An opt-in OpenAI context engine exists behind configuration and repository flags. It has mocked tests but has not been verified with a live API key. |
+| Failure handling | Scanner failures and incomplete source remain failed. Manual review cannot turn a failed scan into a passed scan. |
+
+The [review architecture and implementation plan](docs/ai-review-architecture.md)
+describes planned work: graph-guided context, distinct scanner and AI finding
+origins, citation validation, coverage records, optional free or local model
+providers, resumable AI jobs, dashboard changes, and a measured benchmark.
+Those features are **planned**, not current dashboard capabilities.
+
+## How a PR moves through the system
+
+```mermaid
+flowchart LR
+    GH[GitHub PR] --> WH[Verified webhook]
+    WH --> JOB[Supabase scan job]
+    JOB --> SRC[Exact PR commit]
+    SRC --> SCAN[Isolated scanners]
+    SCAN --> DB[Supabase results]
+    DB --> UI[Dashboard]
+    SRC --> REVIEW[Optional manual or automated AI review]
+    REVIEW --> DB
 ```
 
-## Run all services with Docker Compose
+The scanner gets source code as data; the service does not run the PR's
+application or tests. The manual reviewer can ask the backend for selected
+files at the pinned commit. Scanner output and AI output should be judged by
+their evidence and limitations, not by a single score.
 
-Add `NGROK_AUTHTOKEN` to your existing root `.env`, keep your Supabase and webhook
-settings configured, then run from the project root:
+## Repository map
+
+| Path | Purpose |
+| --- | --- |
+| `backend/app/api/` | Signed webhook, authenticated repository, and manual review endpoints. |
+| `backend/app/services/` | GitHub source acquisition, scanner dispatch, review prompts, validation, and scan pipeline. |
+| `backend/app/workers/` | Durable Supabase scan worker. |
+| `backend/app/scanner_api.py` | API inside the isolated scanner container. |
+| `frontend/src/` | Dashboard, sign-in, analytics, and separate manual review page. |
+| `supabase/migrations/` | Database schema, tenant access rules, job dispatch, scanner, and manual review migrations. |
+| `docs/` | Setup guides, scanner scope, security architecture, and implementation plan. |
+| `docker-compose.yml` | Local API, worker, scanner, frontend, webhook gateway, and ngrok tunnel. |
+
+## Local quick start
+
+You need Docker Desktop or Docker Engine with Compose, a Supabase project, and
+a GitHub App installed on a repository you may test. Use a test repository
+first. The scanner workflow needs **no AI API key**.
+
+1. Copy `.env.example` to a root `.env` if you do not already have one.
+   Fill its Supabase, GitHub App, webhook secret, and ngrok values. Keep
+   `.env` private. Do not paste private keys or the full file into chat.
+2. Apply the migrations in `supabase/migrations/` in filename order. Configure
+   GitHub OAuth and create an organization membership as described in
+   [the live scan guide](docs/live-scan-pipeline.md).
+3. From the **repository root**, start the services:
+
+   ```sh
+   docker compose up -d --build
+   docker compose ps -a
+   ```
+
+4. Open `http://localhost:5173`. The API health route is
+   `http://localhost:8000/health`.
+5. Read `docker compose logs --tail=30 ngrok`, find the HTTPS tunnel URL,
+   and put `<that-url>/api/v1/webhooks/github` in your GitHub App webhook
+   settings. Configure the App's Pull request events and repository access.
+6. Connect the repository with the backend CLI as shown in
+   [the live scan guide](docs/live-scan-pipeline.md), then open or update a
+   test PR. Watch `docker compose logs -f --tail=50 backend scan-worker`
+   and refresh the dashboard.
+
+The frontend at `localhost` and the ngrok webhook tunnel run while your
+machine is on. This Compose setup is **not** an always-on public deployment.
+Free hosted services have quotas and may change their terms. See
+[Docker Compose setup](docs/docker-compose.md) for the full setup and rebuild
+instructions and [webhook troubleshooting](docs/local-webhooks.md) for delivery
+checks. SonarQube is not integrated.
+
+## Manual review without an API key
+
+After a scan record exists, open its **Manual review** link in the Recent pull
+requests table. The review opens in a separate window and requires sign-in
+because it can expose repository source. Copy the generated request into
+your chosen AI chat, then paste only its required JSON response back into
+the review window. The AI may request more repository files through the
+bounded `list_files`, `list_special_files`, and `read_file` protocol.
+Review the request before sharing private code with an external provider.
+
+Read [Manual repository review](docs/manual-review.md) for the full workflow.
+The manual review status and the scanner status are distinct: completing a
+manual exchange does not repair a failed scanner run.
+
+## Development checks
 
 ```sh
-docker compose up
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+python -m pytest
+python -m ruff check .
 ```
-
-This starts FastAPI (8000), the durable scan worker, Vite (5173), and the official
-Ngrok agent. Open `http://localhost:5173`. Use the public URL printed in Ngrok's logs
-plus `/api/v1/webhooks/github` in your GitHub App settings.
-See [Docker Compose setup](docs/docker-compose.md) for prerequisites, environment
-mapping, rebuilds, and shutdown. Follow [Live scan pipeline setup](docs/live-scan-pipeline.md)
-to apply the new migration, configure App/AI credentials and opt repositories into review.
-
-## Dashboard quick start
-
-Requires Node 22.12+ (Node 24 also works).
 
 ```sh
 cd frontend
 npm ci
-npm run dev
-```
-
-Open `http://localhost:5173`. Without credentials, the dashboard shows labeled demo
-data. Search, status filtering and the Analytics view work immediately.
-
-## Backend quick start
-
-Requires Python 3.11+; the container uses Python 3.12. From the repository root:
-
-```sh
-python3 -m venv backend/.venv
-source backend/.venv/bin/activate
-pip install -r backend/requirements-dev.txt
-cp .env.example .env
-# Replace placeholders with your cloud credentials.
-cd backend
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Health: `http://localhost:8000/health`. API docs: `http://localhost:8000/docs`.
-Liveness works without provider credentials; protected routes require Supabase and
-a user bearer token. Settings find the root `.env` regardless of working directory.
-Container deployments inject secrets as environment variables.
-
-## Hosted Supabase setup
-
-1. Create a Supabase project and apply
-   `supabase/migrations/202609300001_foundation.sql` using its SQL editor or migration
-   pipeline. This creates the tenant schema, grants, RLS and pgvector extension.
-2. Create an Auth user through your project's user-management flow. Provision its
-   organization membership in the trusted SQL editor:
-
-   ```sql
-   with new_org as (
-     insert into public.organizations (name) values ('Your organization') returning id
-   )
-   insert into public.organization_members (organization_id, user_id, role)
-   select id, 'REPLACE_WITH_AUTH_USER_UUID'::uuid, 'owner' from new_org;
-   ```
-
-3. Fill the root `.env` with the project URL, public/anon key and server-only service
-   key. Never expose privileged keys in the frontend or source control.
-4. Copy `frontend/.env.example` to `frontend/.env.local`, supply the public project
-   URL and public/anon key, set `VITE_DEMO_MODE=false`, restart Vite and sign in.
-5. New projects show an empty dashboard. Trusted provisioning/workers populate
-   repository, PR and finding records; browser clients have read-only tenant access.
-
-Sessions live in memory and disappear on reload. No localStorage, sessionStorage,
-offline database or persistent code checkout is used. All `VITE_` variables are
-public browser configuration. The service key is server-only and bypasses RLS.
-
-## API and integration status
-
-### GitHub sign-in
-
-Enable GitHub under Supabase Authentication → Sign In / Providers and enter your
-GitHub OAuth App Client ID and Secret there (never in frontend variables). The GitHub
-OAuth callback must be the Supabase provider's URL:
-`https://<project-ref>.supabase.co/auth/v1/callback`.
-
-For development, set the Supabase Site URL to `http://localhost:5173` and add
-`http://localhost:5173/` to its allowed Redirect URLs. Open the frontend using that
-same hostname and port. Add your exact HTTPS frontend URL for production. The sign-in
-button requests a redirect to the current frontend origin's `/` path.
-
-The browser uses Supabase's implicit OAuth flow with URL detection and no persistent
-session storage. It waits for callback initialization, removes callback fragments,
-and subscribes to login, token-refresh and logout events. Refreshing the page requires
-sign-in again. GitHub login creates/authenticates the user; organization membership
-still needs trusted provisioning. It does not grant repository scanning access.
-See [Supabase's implicit-flow documentation](https://supabase.com/docs/guides/auth/sessions/implicit-flow).
-
-| Endpoint | Behavior |
-| --- | --- |
-| `GET /health` | Liveness, not provider readiness |
-| `GET /api/v1/auth/me` | Verify Supabase bearer token and return user ID |
-| `GET /api/v1/repos?limit=25&offset=0` | Bounded, tenant-scoped repository reads |
-| `POST /api/v1/webhooks/github` | Verify signature and delivery ID; answer signed pings |
-
-Actionable PR webhooks now atomically enqueue scans in Supabase and return **202**;
-duplicates return **200**. Missing queue configuration/migration returns **503**.
-Apply the additional dispatch migration, provision trusted repository/installation
-mappings, and run the separate worker as described in
-[Durable scan dispatch](docs/scan-dispatch.md).
-
-The worker has lease recovery, bounded retries and atomic scan/finding updates.
-GitHub installation tokens and bounded immutable source feed Semgrep, Trivy, and
-TruffleHog; bounded diffs feed optional structured OpenAI review.
-Unconfigured, incomplete or failed reviews never produce a false clean result. Redis
-is not needed. See [Live scan pipeline setup](docs/live-scan-pipeline.md) for credentials,
-repository registration, webhook 401/403 diagnosis and retrying previously failed jobs.
-
-## Verification
-
-For local GitHub webhook testing, follow [the Ngrok setup guide](docs/local-webhooks.md).
-It covers the shared secret, `ngrok http 8000`, GitHub App permissions, delivery
-inspection, and the signed-request helper at `backend/scripts/send_test_webhook.py`.
-No deployment is required. Valid mapped PR events return 202 after durable enqueue;
-duplicates and signed pings return 200.
-
-```sh
-cd backend
-.venv/bin/ruff check .
-.venv/bin/pytest
-```
-
-```sh
-cd frontend
 npm run build
 npm test
 ```
 
-CI runs the same checks without cloud secrets. Tests cover authentication gates,
-webhook tampering and limits, redacted validation, CORS, stub behavior and metrics.
-The frontend lockfile records dependency versions. Python requirements use bounded
-versions; produce a target-platform lock and pin image digests for release.
-Hosted migration, cross-tenant RLS and provider calls require cloud integration
-validation before release.
+Tests use mocks for cloud providers. A local passing test suite does not
+prove that a live GitHub installation, Supabase migration, provider account,
+or public deployment is configured correctly.
 
-See [architecture and PDF analysis](docs/architecture.md) for trust boundaries,
-metric definitions, source references and the remaining implementation sequence.
+## Privacy and review limits
 
-For a human-operated LLM exchange that can request bounded repository files at
-the PR commit, see [Manual repository review](docs/manual-review.md). Apply its
-additional migration before using the dashboard action.
+- Supabase service credentials and GitHub App private keys belong only in
+  server configuration. Browser variables beginning with `VITE_` are public.
+- The scanner container has no tenant secrets. The webhook tunnel points to
+  the restricted webhook gateway, not the full API.
+- Source selection, scanner rules, and AI context are bounded. A model can
+  miss a bug or misinterpret real code even when its file citation is valid.
+- Docker findings currently describe referenced base images. They do not
+  establish that a vulnerable package is reachable in the running app.
+- A reliable benchmark requires human-reviewed answers, including benign PRs
+  and vulnerabilities the system misses. The planned benchmark will report
+  scanner and AI findings separately.
 
-The separate scan worker also runs Semgrep, Trivy, and TruffleHog against a
-bounded immutable repository snapshot. See [Scanner suite](docs/scanner-suite.md)
-for scope, limits, and setup. SonarQube is not connected yet.
+See [architecture notes](docs/architecture.md), [scanner scope](docs/scanner-suite.md),
+and [the review plan](docs/ai-review-architecture.md) for details.
