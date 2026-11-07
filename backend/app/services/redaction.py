@@ -24,3 +24,5 @@ def contains_secret(text: str) -> bool:
     return bool(re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text)) or any(
         pattern.search(text) for pattern in PATTERNS
     )
+
+# Test marker for import graph and manual review workflow verification.
