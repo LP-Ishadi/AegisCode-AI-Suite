@@ -8,7 +8,7 @@ export function DashboardStats({ data, onSelect }: { data: DashboardData; onSele
   const cards = [
     { id: 'pullRequests' as const, label: 'Total pull requests', value: data.totalPRs.toLocaleString(), detail: 'Across connected repositories', icon: GitPullRequest, color: 'text-indigo-300' },
     { id: 'projectFindings' as const, label: 'Code & dependency findings', value: data.activeProjectFindings.toLocaleString(), detail: 'Code, secrets, dependencies and AI results', icon: Bug, color: 'text-amber-300' },
-    { id: 'imageFindings' as const, label: 'Docker image findings', value: data.activeImageFindings.toLocaleString(), detail: 'Base image package advisories', icon: Bug, color: 'text-violet-300' },
+    { id: 'imageFindings' as const, label: 'Docker image findings', value: data.activeImageFindings.toLocaleString(), detail: 'Latest completed PR scan per repository', icon: Bug, color: 'text-violet-300' },
     { id: 'score' as const, label: 'Security score', value: score === null ? '—' : `${score}%`, detail: 'Passed PRs / completed reviews', icon: ShieldCheck, color: 'text-indigo-300' },
   ];
   return <section aria-label="Workspace metrics" className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">

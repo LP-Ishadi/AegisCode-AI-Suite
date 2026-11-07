@@ -34,6 +34,23 @@ class ManualReviewTests(unittest.TestCase):
                 {"kind": "final", "findings": [], "tool": {"name": "list_files"}}
             )
 
+    def test_final_finding_requires_explicit_evidence(self):
+        with self.assertRaises(ValidationError):
+            ModelReply.model_validate(
+                {
+                    "kind": "final",
+                    "findings": [
+                        {
+                            "rule_id": "security.issue",
+                            "file_path": "app.py",
+                            "line": 1,
+                            "severity": "medium",
+                            "message": "Check this behavior",
+                        }
+                    ],
+                }
+            )
+
     def test_prompt_contains_actual_response_schema(self):
         metadata = ScanMetadata.model_construct(
             repository_full_name="owner/repo",
@@ -59,13 +76,13 @@ class ManualReviewTests(unittest.TestCase):
             "scan_id": str(scan_id),
             "status": "active",
             "step": 0,
-            "prompt": {"coverage_pending": [], "file_read_completed": False},
+            "prompt": {"coverage_pending": [], "file_read_completed": False,
+                       "evidence_scope": {"commit": "a" * 40, "diff_lines": {},
+                                          "auto_context_paths": [], "read_file_paths": []}},
         }
         tools = MagicMock()
         tools.ready = AsyncMock()
-        submission = manual_reviews.Submission(
-            step=0, response={"kind": "final", "findings": []}
-        )
+        submission = manual_reviews.Submission(step=0, response={"kind": "final", "findings": []})
         with (
             patch.object(manual_reviews, "load_review", return_value=review),
             patch.object(manual_reviews, "metadata_for_scan", return_value=object()),
@@ -91,7 +108,9 @@ class ManualReviewTests(unittest.TestCase):
             "scan_id": str(scan_id),
             "status": "active",
             "step": 0,
-            "prompt": {"coverage_pending": [], "file_read_completed": False},
+            "prompt": {"coverage_pending": [], "file_read_completed": False,
+                       "evidence_scope": {"commit": "a" * 40, "diff_lines": {},
+                                          "auto_context_paths": [], "read_file_paths": []}},
         }
         tools = MagicMock()
         tools.ready = AsyncMock()
@@ -126,9 +145,7 @@ class ManualReviewTests(unittest.TestCase):
             final_result = asyncio.run(
                 manual_reviews.submit_response(
                     review_id,
-                    manual_reviews.Submission(
-                        step=1, response={"kind": "final", "findings": []}
-                    ),
+                    manual_reviews.Submission(step=1, response={"kind": "final", "findings": []}),
                     object(),
                 )
             )
@@ -245,6 +262,7 @@ class ManualReviewTests(unittest.TestCase):
             patch.object(manual_reviews, "get_service_client", return_value=service),
             patch.object(manual_reviews, "metadata_for_scan", return_value=object()),
             patch.object(manual_reviews, "scanner_findings_for_scan", return_value=[]),
+            patch.object(manual_reviews, "graph_for_scan", return_value=None),
             patch.object(manual_reviews, "initial_prompt", new=AsyncMock(return_value={})),
         ):
             result = asyncio.run(manual_reviews.start_review(scan_id, user))

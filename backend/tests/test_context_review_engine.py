@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
-from app.models.schemas import Finding
+from app.models.schemas import CoverageStatus, Finding, ReviewCoverage, ReviewMode
 from app.services.adapter_errors import AdapterError
 from app.services.context_review_engine import ContextReviewEngine
 from app.services.manual_review import RepositoryTools, prepared_prompt, prompt
@@ -109,7 +109,18 @@ def test_automated_review_rejects_early_final_then_reads_file():
     tools.execute = AsyncMock(
         return_value={"path": "app/auth.py", "commit": meta.commit_sha, "content": "pass"}
     )
-    request = prompt(meta, source.diff, step=0, scanner_evidence=scanner_evidence([finding]))
+    request = prompt(
+        meta,
+        source.diff,
+        step=0,
+        scanner_evidence=scanner_evidence([finding]),
+        evidence_scope={
+            "commit": meta.commit_sha,
+            "diff_lines": {},
+            "auto_context_paths": [],
+            "read_file_paths": [],
+        },
+    )
     with (
         patch("app.services.context_review_engine.RepositoryTools", return_value=tools),
         patch(
@@ -129,7 +140,7 @@ def test_automated_review_rejects_early_final_then_reads_file():
     assert result.findings == []
     assert result.engine_version == "openai-context/test-model"
     assert client.responses.parse.await_count == 3
-    prepare.assert_awaited_once_with(meta, source, tools, [finding])
+    prepare.assert_awaited_once_with(meta, source, tools, [finding], graph_result=None)
     tools.execute.assert_awaited_once()
 
 
@@ -181,7 +192,16 @@ def test_pipeline_passes_scanner_findings_to_automated_review():
     source_provider.fetch = AsyncMock(return_value=source)
     engine = MagicMock()
     engine.analyze = AsyncMock(
-        return_value=ScanResult(findings=[], engine_version="openai-context/test-model")
+        return_value=ScanResult(
+            findings=[],
+            engine_version="openai-context/test-model",
+            review_mode=ReviewMode.automated,
+            coverage=[ReviewCoverage(
+                mode=ReviewMode.automated,
+                status=CoverageStatus.complete,
+                commit_sha=meta.commit_sha,
+            )],
+        )
     )
     config = settings()
     config.scanner_service_url = None
@@ -194,6 +214,6 @@ def test_pipeline_passes_scanner_findings_to_automated_review():
             authorize=lambda _: {"ai_scan_enabled": True},
         )
         result = asyncio.run(pipeline.run(meta))
-    engine.analyze.assert_awaited_once_with(meta, source, [finding])
+    engine.analyze.assert_awaited_once_with(meta, source, [finding], graph_result=None)
     assert result.findings == [finding]
     assert result.engine_version == "scanner-suite-test+openai-context"

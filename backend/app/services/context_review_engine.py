@@ -7,8 +7,9 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
-from app.models.schemas import Finding
+from app.models.schemas import Finding, ReviewMode
 from app.services.adapter_errors import AdapterError
+from app.services.coverage_ledger import ai_coverage
 from app.services.manual_review import (
     ModelReply,
     RepositoryTools,
@@ -33,6 +34,7 @@ class ContextReviewEngine:
         metadata: ScanMetadata,
         source: SourceBundle,
         scanner_findings: list[Finding],
+        graph_result: dict | None = None,
     ) -> ScanResult:
         if not self.settings.ai_scanning_enabled or not self.settings.openai_api_key:
             raise AdapterError("ai_configuration")
@@ -40,11 +42,15 @@ class ContextReviewEngine:
             raise AdapterError("source_incomplete")
         tools = RepositoryTools(metadata)
         await tools.ready()
-        request = await prepared_prompt(metadata, source, tools, scanner_findings)
+        request = await prepared_prompt(
+            metadata, source, tools, scanner_findings, graph_result=graph_result
+        )
         instructions = request["system"]
         messages = [{"role": "user", "content": json.dumps(request)}]
         pending = list(request["coverage_pending"])
         file_read_completed = False
+        evidence_scope = request["evidence_scope"]
+        coverage_context = request.get("coverage_context")
 
         try:
             async with self.client_factory(
@@ -70,6 +76,13 @@ class ContextReviewEngine:
                         try:
                             require_file_read(file_read_completed)
                             require_context_for_clean(reply.findings, pending)
+                            findings = await checked_findings(
+                                metadata,
+                                reply.findings,
+                                tools,
+                                mode=ReviewMode.automated,
+                                evidence_scope=evidence_scope,
+                            )
                         except ValueError as exc:
                             messages.extend(
                                 [
@@ -78,10 +91,14 @@ class ContextReviewEngine:
                                 ]
                             )
                             continue
-                        findings = await checked_findings(metadata, reply.findings, tools)
                         return ScanResult(
                             findings=findings,
                             engine_version=f"openai-context/{self.settings.openai_model}",
+                            review_mode=ReviewMode.automated,
+                            coverage=[ai_coverage(
+                                metadata.commit_sha, ReviewMode.automated,
+                                evidence_scope, coverage_context, pending,
+                            )],
                         )
                     try:
                         result = await tools.execute(reply.tool)
@@ -90,6 +107,9 @@ class ContextReviewEngine:
                         result = {"error": "unsupported_file_or_tree", "path": reply.tool.path}
                     if reply.tool.name == "read_file" and "content" in result:
                         file_read_completed = True
+                        paths = evidence_scope["read_file_paths"]
+                        if reply.tool.path not in paths:
+                            paths.append(reply.tool.path)
                         if reply.tool.path in pending:
                             pending.remove(reply.tool.path)
                     next_request = prompt(
@@ -99,6 +119,8 @@ class ContextReviewEngine:
                         tool_result=result,
                         coverage_pending=pending,
                         file_read_completed=file_read_completed,
+                        evidence_scope=evidence_scope,
+                        coverage_context=coverage_context,
                     )
                     messages.extend(
                         [
@@ -112,7 +134,8 @@ class ContextReviewEngine:
             raise AdapterError("upstream_unavailable", retryable=True) from None
         except APIStatusError as exc:
             raise AdapterError(
-                "upstream_unavailable" if exc.status_code == 429 or exc.status_code >= 500
+                "upstream_unavailable"
+                if exc.status_code == 429 or exc.status_code >= 500
                 else "ai_configuration",
                 retryable=exc.status_code == 429 or exc.status_code >= 500,
             ) from None

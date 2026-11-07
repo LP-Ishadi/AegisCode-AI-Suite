@@ -21,12 +21,14 @@ export async function loadVulnerabilities(group: FindingGroup): Promise<Vulnerab
   if (!client) throw new Error('Supabase is not configured.');
   const levels = ['critical', 'high', 'medium', 'low', 'info'];
   const results = await Promise.all(levels.map(level => {
-    const query = client.from('findings')
-      .select('id,rule_id,file_path,line,severity,message,resolved,created_at,scan_id')
-      .eq('resolved', false).eq('severity', level);
     const scoped = group === 'image'
-      ? query.like('rule_id', IMAGE_RULE_PATTERN)
-      : query.not('rule_id', 'like', IMAGE_RULE_PATTERN);
+      ? client.from('current_image_findings')
+        .select('id,rule_id,file_path,line,severity,message,resolved,created_at,scan_id')
+        .eq('severity', level)
+      : client.from('findings')
+        .select('id,rule_id,file_path,line,severity,message,resolved,created_at,scan_id')
+        .eq('resolved', false).eq('severity', level)
+        .not('rule_id', 'like', IMAGE_RULE_PATTERN);
     return scoped.order('created_at', { ascending: false }).limit(200);
   }));
   if (results.some(result => result.error)) throw new Error('Unable to load finding logs. Please try again.');

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
-from app.models.schemas import Finding, StrictModel
+from app.models.schemas import Finding, ReviewCoverage, ReviewMode, StrictModel
 
 Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 RepoName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", max_length=255)]
@@ -146,3 +146,6 @@ class SourceBundle(StrictModel):
 class ScanResult(StrictModel):
     findings: list[Finding] = Field(max_length=1000)
     engine_version: str = Field(min_length=1, max_length=100)
+    review_mode: ReviewMode = ReviewMode.scanner_only
+    coverage: list[ReviewCoverage] = Field(default_factory=list, max_length=2)
+    context_graph: dict | None = None

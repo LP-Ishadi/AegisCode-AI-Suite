@@ -18,16 +18,34 @@ incomplete scan must not be shown as clean.
 | --- | --- |
 | GitHub integration | Signed PR webhooks enqueue durable jobs; GitHub App installation access fetches a commit-pinned source snapshot. |
 | Scanners | Isolated Semgrep, Trivy, and TruffleHog scan bounded source. Trivy also checks referenced Docker base images; it does not scan the final built image. |
-| Results | Supabase stores scans and findings. The dashboard separates code/dependency findings from Docker image advisories. |
+| Results | Supabase stores scans and findings. New records identify scanner versus AI origin and review mode; historical records with uncertain provenance are marked unknown. The dashboard separates code/dependency findings from Docker image advisories. Its Docker total and detail list use each repository's last completed PR scan, so repeated PR scans do not multiply the workspace total. A failed newer scan leaves the previous result visible, which may be stale. Older scan findings remain in history. |
 | Manual AI review | A separate signed-in window exchanges structured JSON with a chat model, supports bounded repository file tools, and stores its review steps. |
 | Automated AI | An opt-in OpenAI context engine exists behind configuration and repository flags. It has mocked tests but has not been verified with a live API key. |
+| Related code | The isolated scanner maps direct Python imports and relative JavaScript/TypeScript imports at the PR commit. The review prompt uses a bounded batch of changed files, then graph neighbors, then heuristic matches. Unsupported languages and unavailable graph hints use heuristic selection. |
 | Failure handling | Scanner failures and incomplete source remain failed. Manual review cannot turn a failed scan into a passed scan. |
 
 The [review architecture and implementation plan](docs/ai-review-architecture.md)
-describes planned work: graph-guided context, distinct scanner and AI finding
-origins, citation validation, coverage records, optional free or local model
-providers, resumable AI jobs, dashboard changes, and a measured benchmark.
-Those features are **planned**, not current dashboard capabilities.
+tracks the staged work. Stage 1 defines review origin, evidence references,
+and coverage storage contracts. Stage 2 checks manual and context-based
+automated AI citations against the PR commit and the files supplied to the
+reviewer. Stage 3 persists per-file coverage outcomes and cited locations with
+the review transition. Stage 4 implements bounded graph-guided context
+selection. A checked citation confirms a location, not a vulnerability.
+Coverage is stored but is not yet shown on the dashboard. Optional free or
+local model providers, resumable AI jobs, dashboard changes, and a measured
+benchmark remain planned. Stage 3 live coverage verification remains pending.
+
+Apply `supabase/migrations/202611060002_coverage_ledger.sql` after
+`202611060001_review_contracts.sql` and before rebuilding the current backend
+and scan worker. This migration adds a per-file coverage ledger and versioned
+completion functions. It does not rerun or relabel old scans. New scanner runs
+record the acquired snapshot and scanner stage outcomes; AI reviews record
+which bounded files were supplied, read through a tool, or omitted. A scan
+cannot complete through the new worker path without a matching coverage record.
+Apply `202611080001_scan_context_graph.sql` after
+`202611070001_current_image_findings.sql`, then rebuild the scanner,
+scan worker, and backend. New completed scans can save path-only graph hints;
+old scans are not backfilled and use the existing selection fallback.
 
 ## How a PR moves through the system
 
@@ -37,6 +55,8 @@ flowchart LR
     WH --> JOB[Supabase scan job]
     JOB --> SRC[Exact PR commit]
     SRC --> SCAN[Isolated scanners]
+    SRC --> GRAPH[Isolated one-hop import graph]
+    GRAPH --> REVIEW
     SCAN --> DB[Supabase results]
     DB --> UI[Dashboard]
     SRC --> REVIEW[Optional manual or automated AI review]
@@ -73,6 +93,14 @@ first. The scanner workflow needs **no AI API key**.
 2. Apply the migrations in `supabase/migrations/` in filename order. Configure
    GitHub OAuth and create an organization membership as described in
    [the live scan guide](docs/live-scan-pipeline.md).
+   For an existing installation, apply
+   `202611060001_review_contracts.sql` and then
+   `202611060002_coverage_ledger.sql` before rebuilding the backend and scan
+   worker; the new worker calls `finish_scan_job_v3`. Apply
+   `202611070001_current_image_findings.sql` before loading the updated
+   dashboard; it scopes Docker advisory counts to the last completed scan
+   per repository. Apply `202611080001_scan_context_graph.sql` before
+   rebuilding the scanner and scan worker for graph-guided context.
 3. From the **repository root**, start the services:
 
    ```sh
@@ -132,6 +160,9 @@ npm test
 Tests use mocks for cloud providers. A local passing test suite does not
 prove that a live GitHub installation, Supabase migration, provider account,
 or public deployment is configured correctly.
+The disposable database contract test is
+`supabase/tests/review_contracts.sql`; run it only against a throwaway
+Supabase-compatible database after all migrations.
 
 ## Privacy and review limits
 

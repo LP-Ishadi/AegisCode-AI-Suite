@@ -172,6 +172,22 @@ Enforce independent limits for tokens, tool reads, time, and provider usage.
 
 ## Implementation order and acceptance checks
 
+Stages 1 through 3 backend contracts, validation, and persistence are implemented. New findings carry
+an origin and review mode, while historical rows with uncertain origin are
+marked `unknown`. Commit-pinned evidence and coverage tables have tenant-safe
+read policies and idempotent service writes. Manual and context-based automated
+AI findings pass through one citation validator. It checks the pinned commit,
+cited lines, supplied context, and requested cross-file references. The model
+still decides when cross-file proof is needed; the validator cannot prove the
+security claim itself. New review transitions persist cited locations and
+per-file coverage outcomes in the same database transaction as their results.
+The ledger records a bounded selection and acquired scanner snapshot; it does
+not claim every source line was analyzed. Historical scans keep their unknown
+provenance and are not backfilled with invented coverage. The dashboard does
+not yet display the ledger. Apply migrations `202611060001_review_contracts.sql`
+and `202611060002_coverage_ledger.sql` in order before deploying the updated
+backend and worker.
+
 1. **Baseline and contracts.** Freeze the current test results; define
    finding origin, evidence references, review mode, and coverage states in
    backend contracts. Existing stored rows remain readable. Add migration
@@ -189,6 +205,39 @@ Enforce independent limits for tokens, tool reads, time, and provider usage.
    the isolated service, then compare graph-enabled and graph-disabled context
    on fixed PR fixtures. Keep a safe fallback for unsupported languages or
    unavailable indexing.
+
+   Implementation: the scanner service parses direct Python imports and
+   relative JavaScript/TypeScript imports from the pinned snapshot. It returns
+   path-only, one-hop neighbors to the worker; completed scans save these
+   hints in `scan_context_graph`. Initial manual and automated prompts choose
+   changed files, then graph neighbors, then heuristic matches within the
+   existing eight-file and 64,000-character bounds. The graph is a selection
+   hint, not proof that a code path executes. Graph unavailability does not
+   change scanner results. Fixed fixtures compare graph and fallback choices.
+   Apply `202611080001_scan_context_graph.sql` and rebuild scanner, worker,
+   and backend before testing on a new PR. Stage 3's live gate below remains
+   pending; do not call Stage 4 fully accepted until that gate and a new PR
+   graph record have been checked.
+
+   For the live check, open a new PR that changes a Python or relative
+   JavaScript/TypeScript module imported by another file. After its scan
+   completes, run this in the Supabase SQL Editor, replacing the PR number:
+
+   ```sql
+   select p.number, s.status, s.commit_sha,
+          g.commit_sha as graph_commit, g.graph->'candidates' as candidates
+   from public.pull_requests p
+   join public.scans s on s.id = p.latest_scan_id
+   left join public.scan_context_graph g on g.scan_id = s.id
+   where p.number = 12;
+   ```
+
+   The graph commit must equal the scan commit. A missing row means the
+   selection fallback was used; inspect the scan-worker log for a graph-hint
+   warning. In a new manual review, the first prompt's `auto_context.graph`
+   reports `used`, `not_selected`, `no_neighbors`, or `fallback`; review the actual
+   `auto_context.included` paths rather than treating graph status as coverage.
+
 5. **Review modes and providers.** Share prompts, tool rules, validation, and
    storage among scanner-only, manual, and automated modes. Add Groq and local
    Ollama behind opt-in settings, with no required key. Test rate-limit,
@@ -216,6 +265,30 @@ Enforce independent limits for tokens, tool reads, time, and provider usage.
    Verify a no-paid-service deployment option and its quotas before
    advertising a persistent public demo. Until then, describe the app as
    locally runnable and demoable when the operator's machine is online.
+
+### Stage 3 live verification gate — pending
+
+Run this **before calling Stage 4 complete**. The backend and database tests
+cover ledger transitions, but the new PR screenshot so far shows only that
+`snapshot_acquired` rows were saved. It does not verify all outcomes.
+
+1. On PR #11's scan, if it completed after the coverage migration, compare
+   the scanner coverage `commit_sha` with the scan's `commit_sha`. Check that
+   `selected_count` and `supplied_count` in
+   `review_coverage.summary` equal the number of `scanner_only` file rows with
+   `snapshot_acquired`. This outcome means the snapshot contained the file;
+   it does **not** mean an AI read it or every scanner analyzed it.
+2. Finish a manual review of that same scan with one successful `read_file`.
+   Confirm its `manual` ledger has a `read_file` row for that path, supplied
+   initial context paths have `supplied_context`, and omitted paths carry a
+   reason. Confirm the coverage record and citations use the scan's commit SHA.
+3. On a **new failed test scan**, confirm the scan and PR remain `failed`, the
+   scanner ledger is `failed`, and no `passed` result appears after a manual
+   review. Historical scans are not backfilled, so use a scan created after
+   the coverage migration.
+
+Record the PR numbers, scan IDs, outcomes, and date here when checked. Do not
+mark this gate complete based only on a screenshot of the first 30 file rows.
 
 Each stage is complete only when its meaningful tests and documentation are
 updated. Do not introduce a new status or provider in the UI before its

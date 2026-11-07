@@ -2,9 +2,10 @@
 
 This feature adds a manual LLM exchange to an existing PR scan. It uses the same
 GitHub App installation and exact commit as the queued scan. It does not require an
-OpenAI API key. Apply `202610230001_manual_reviews.sql` after the existing three
-migrations, then apply `202611010001_review_reliability.sql` before using manual
-review. Recreate the API and frontend containers. Set `VITE_API_URL` to the
+OpenAI API key. Apply all migrations in filename order, including
+`202611060001_review_contracts.sql` and
+`202611060002_coverage_ledger.sql`, before using the current backend. Recreate
+the API and frontend containers. Set `VITE_API_URL` to the
 browser-reachable API origin (for local Compose, `http://localhost:8000`). The API's
 `CORS_ORIGINS` must include the frontend origin.
 
@@ -43,14 +44,48 @@ Fix the scanner issue and run a new successful scan before treating the PR as pa
 Allowed tools are `list_files`, `list_special_files`, and `read_file`. All operate
 against the immutable PR commit. File reads are limited to 16,000 characters;
 the tree is limited to 2,000 entries; a review is limited to 20 steps. The model
-cannot write to GitHub or Supabase. Final findings must refer to a real file and
-line at that commit. An empty final finding set means only that this review found
+cannot write to GitHub or Supabase. Final findings must include `evidence`
+references. Each names its commit, repository path, 1-based line, role, and
+source (`diff`, `auto_context`, or `read_file`). The backend checks that the AI
+was shown that location, then re-reads the exact commit to confirm the line.
+The final response stores those locations and a coverage record with the
+review result. Tool steps save pending coverage so a browser refresh can show
+the same review state. These records describe only the bounded files selected
+or requested for this review; they do not certify the full repository.
+For a claim that depends on another file, set `cross_file_required` to `true`
+and cite that other file too. One-file issues can use `false`; unrelated
+citations should not be invented. A checked location does not prove the
+vulnerability. An empty final finding set means only that this review found
 no supported issue; it does not certify the repository as secure.
+
+For example, one finding can use this shape. Replace the commit, path, line,
+rule, and message with facts from the current review request:
+
+```json
+{
+  "kind": "final",
+  "findings": [{
+    "rule_id": "example.authorization",
+    "file_path": "app/route.py",
+    "line": 12,
+    "severity": "high",
+    "message": "Explain the concrete authorization gap.",
+    "evidence": [{
+      "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "file_path": "app/route.py",
+      "line": 12,
+      "role": "changed_code",
+      "source": "diff"
+    }],
+    "cross_file_required": false
+  }]
+}
+```
 
 Automatic context includes at most eight files total, of which at most four are
 related unchanged files, with a total of 64,000 characters. Individual reads
 still have the 16,000-character limit. Existing manual reviews keep their stored
-prompts; start a new review on a new scan to see automatic context.
+prompts; start a new review on a new scan to use citation validation.
 
 The database stores each response, tool summary, and the next redacted prompt so
 the exchange can resume after a browser refresh. A prompt containing a read file
