@@ -22,7 +22,7 @@ export async function loadDashboard(): Promise<DashboardData> {
     supabase.from('pull_requests').select('id,number,title,author,status,risk_tags,updated_at,latest_scan_id,repositories(full_name)', { count: 'exact' }).order('updated_at', { ascending: false }).limit(50),
     supabase.from('repositories').select('id', { count: 'exact', head: true }),
     supabase.from('findings').select('id', { count: 'exact', head: true }).eq('resolved', false).not('rule_id', 'like', IMAGE_RULE_PATTERN),
-    supabase.from('findings').select('id', { count: 'exact', head: true }).eq('resolved', false).like('rule_id', IMAGE_RULE_PATTERN),
+    supabase.from('current_image_findings').select('id', { count: 'exact', head: true }),
     supabase.from('pull_requests').select('id', { count: 'exact', head: true }).eq('status', 'passed'),
     supabase.from('pull_requests').select('id', { count: 'exact', head: true }).in('status', ['passed', 'action_required']),
   ]);

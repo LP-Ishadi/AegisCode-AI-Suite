@@ -5,7 +5,7 @@ from pydantic import Field
 
 from app.core.config import Settings, get_settings
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
-from app.models.schemas import Finding, StrictModel
+from app.models.schemas import EvidenceStatus, Finding, FindingOrigin, ReviewMode, StrictModel
 from app.services.adapter_errors import AdapterError
 from app.services.redaction import redact
 
@@ -80,8 +80,15 @@ class AIScanEngine:
                         update={
                             "rule_id": redact(finding.rule_id),
                             "message": redact(finding.message),
+                            "origin": FindingOrigin.ai,
+                            "review_mode": ReviewMode.legacy_ai,
+                            "evidence_status": EvidenceStatus.location_checked,
                         }
                     )
                 )
                 seen.add(key)
-        return ScanResult(findings=findings, engine_version=f"openai-diff/{settings.openai_model}")
+        return ScanResult(
+            findings=findings,
+            engine_version=f"openai-diff/{settings.openai_model}",
+            review_mode=ReviewMode.legacy_ai,
+        )

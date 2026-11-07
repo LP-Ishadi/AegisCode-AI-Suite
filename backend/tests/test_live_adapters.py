@@ -10,7 +10,7 @@ from test_dispatch import event_data, metadata, queue
 
 from app.core.config import Settings
 from app.models.dispatch import PRDispatchEvent, ScanResult
-from app.models.schemas import Finding
+from app.models.schemas import EvidenceStatus, Finding, FindingOrigin, ReviewMode
 from app.services.adapter_errors import AdapterError
 from app.services.ai_scanner import AIScanEngine, Analysis
 from app.services.dispatch_service import (
@@ -99,7 +99,12 @@ def test_real_adapters_through_worker_persist_findings():
         process_one(jobs, ScanPipeline(source, AIScanEngine(settings(), client_factory=factory)))
     )
     result = jobs.finish.call_args.kwargs["result"]
-    assert isinstance(result, ScanResult) and result.findings == [finding()]
+    assert isinstance(result, ScanResult) and len(result.findings) == 1
+    assert result.findings[0].rule_id == finding().rule_id
+    assert result.findings[0].origin is FindingOrigin.ai
+    assert result.findings[0].review_mode is ReviewMode.legacy_ai
+    assert result.findings[0].evidence_status is EvidenceStatus.location_checked
+    assert result.review_mode is ReviewMode.legacy_ai
     assert jobs.finish.call_args.kwargs["error"] is None
     authorize.assert_called_once()
     assert all(r.url.host == "api.github.com" for r in requests)

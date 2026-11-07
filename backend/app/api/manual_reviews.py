@@ -11,8 +11,9 @@ from pydantic import Field
 from app.core.security import AuthenticatedUser
 from app.database.supabase_client import get_service_client
 from app.models.dispatch import ScanMetadata
-from app.models.schemas import StrictModel
+from app.models.schemas import CoverageStatus, Finding, ReviewMode, StrictModel
 from app.services.adapter_errors import AdapterError
+from app.services.coverage_ledger import ai_coverage, coverage_payload
 from app.services.manual_review import (
     ModelReply,
     RepositoryTools,
@@ -103,6 +104,30 @@ def existing_review_id(service, scan_id: UUID) -> str | None:
     return rows[0]["id"] if rows else None
 
 
+def scanner_findings_for_scan(service, scan_id: UUID) -> list[Finding]:
+    rows = (
+        service.table("findings")
+        .select("rule_id,file_path,line,severity,message")
+        .eq("scan_id", str(scan_id))
+        .limit(500)
+        .execute()
+        .data
+    )
+    return [Finding.model_validate(row) for row in rows]
+
+
+def graph_for_scan(service, scan_id: UUID) -> dict | None:
+    rows = (service.table("scan_context_graph")
+            .select("commit_sha,graph").eq("scan_id", str(scan_id))
+            .limit(1).execute().data)
+    if not rows:
+        return None
+    graph = rows[0].get("graph")
+    if isinstance(graph, dict) and graph.get("commit") == rows[0].get("commit_sha"):
+        return graph
+    return None
+
+
 @router.post("/scans/{scan_id}")
 async def start_review(scan_id: UUID, user: AuthenticatedUser):
     scan = await asyncio.to_thread(operator_scan, user, scan_id)
@@ -114,7 +139,11 @@ async def start_review(scan_id: UUID, user: AuthenticatedUser):
         if existing:
             return {"id": existing}
         metadata = await asyncio.to_thread(metadata_for_scan, scan_id)
-        first = await initial_prompt(metadata)
+        scanner_findings = await asyncio.to_thread(scanner_findings_for_scan, service, scan_id)
+        graph_result = await asyncio.to_thread(graph_for_scan, service, scan_id)
+        first = await initial_prompt(
+            metadata, scanner_findings, scan["status"], graph_result=graph_result
+        )
         try:
             row = await asyncio.to_thread(
                 lambda: (
@@ -175,11 +204,18 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
         reply = submission.response
         pending = list(review["prompt"].get("coverage_pending", []))
         file_read_completed = review["prompt"].get("file_read_completed") is True
+        evidence_scope = review["prompt"].get("evidence_scope")
+        coverage_context = review["prompt"].get("coverage_context")
         if reply.kind == "tool":
             result = await tools.execute(reply.tool)
             if reply.tool.name == "read_file" and reply.tool.path in pending:
                 pending.remove(reply.tool.path)
-            file_read_completed = file_read_completed or reply.tool.name == "read_file"
+            if reply.tool.name == "read_file" and "content" in result:
+                file_read_completed = True
+                if evidence_scope is not None:
+                    paths = evidence_scope.setdefault("read_file_paths", [])
+                    if reply.tool.path not in paths:
+                        paths.append(reply.tool.path)
             next_prompt = prompt(
                 metadata,
                 "",
@@ -187,6 +223,8 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
                 tool_result=result,
                 coverage_pending=pending,
                 file_read_completed=file_read_completed,
+                evidence_scope=evidence_scope,
+                coverage_context=coverage_context,
             )
             summary = {
                 "name": reply.tool.name,
@@ -197,17 +235,28 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
         else:
             require_file_read(file_read_completed)
             require_context_for_clean(reply.findings, pending)
-            findings = await checked_findings(metadata, reply.findings, tools)
+            findings = await checked_findings(
+                metadata, reply.findings, tools, evidence_scope=evidence_scope
+            )
             next_prompt = {"status": "completed"}
             summary = {"finding_count": len(findings)}
         response = reply.model_dump(mode="json")
         if reply.kind == "final":
             response["findings"] = [f.model_dump(mode="json") for f in findings]
+        coverage = ai_coverage(
+            metadata.commit_sha, ReviewMode.manual, evidence_scope,
+            coverage_context, pending,
+        )
+        if reply.kind == "tool":
+            coverage = coverage.model_copy(update={
+                "status": CoverageStatus.pending,
+                "scanner_stages": {"ai_review": "active"},
+            })
         accepted = await asyncio.to_thread(
             lambda: (
                 get_service_client()
                 .rpc(
-                    "advance_manual_review",
+                    "advance_manual_review_v2",
                     {
                         "p_review_id": str(review_id),
                         "p_step": submission.step,
@@ -216,6 +265,7 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
                         "p_tool_summary": summary,
                         "p_next_prompt": next_prompt,
                         "p_findings": [f.model_dump(mode="json") for f in findings],
+                        "p_coverage": coverage_payload(coverage),
                     },
                 )
                 .execute()

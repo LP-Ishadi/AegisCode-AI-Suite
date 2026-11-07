@@ -9,11 +9,19 @@ from pathlib import PurePosixPath
 from pydantic import Field, model_validator
 
 from app.core.config import get_settings
-from app.models.dispatch import ScanMetadata
-from app.models.schemas import Finding, StrictModel
+from app.models.dispatch import ScanMetadata, SourceBundle
+from app.models.schemas import (
+    EvidenceReference,
+    EvidenceStatus,
+    Finding,
+    FindingOrigin,
+    ReviewMode,
+    StrictModel,
+)
 from app.services.adapter_errors import AdapterError
 from app.services.github_source import GitHubAPI, GitHubSourceProvider
 from app.services.redaction import redact
+from app.services.review_evidence import scanner_evidence as summarize_scanner_evidence
 
 MAX_FILE_CHARS = 16_000
 MAX_TREE_FILES = 2_000
@@ -48,10 +56,16 @@ class ToolCall(StrictModel):
         return self
 
 
+class AIProposal(Finding):
+    """AI output must name evidence; validation checks that it was supplied."""
+
+    evidence: list[EvidenceReference] = Field(min_length=1, max_length=8)
+
+
 class ModelReply(StrictModel):
     kind: str = Field(pattern=r"^(tool|final)$")
     tool: ToolCall | None = None
-    findings: list[Finding] | None = Field(default=None, max_length=100)
+    findings: list[AIProposal] | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def valid_kind(self):
@@ -90,8 +104,11 @@ def prompt(
     tool_result: dict | None = None,
     local_findings: list[dict] | None = None,
     auto_context: dict | None = None,
+    scanner_evidence: dict | None = None,
     coverage_pending: list[str] | None = None,
     file_read_completed: bool = False,
+    evidence_scope: dict | None = None,
+    coverage_context: dict | None = None,
 ) -> dict:
     return {
         "version": "manual-review-v1",
@@ -106,6 +123,8 @@ def prompt(
             "reviewed; request any needed file with read_file before concluding. "
             "You must request read_file for at least one repository file before any final "
             "answer, even if the supplied context appears sufficient. "
+            "Use scanner findings as leads; trace relevant changed code through callers, "
+            "permission checks, dependencies, and configuration before concluding. "
             "An empty final answer is not accepted while changed files remain in "
             "coverage_pending. "
             "Never repeat credentials or secret values. Output one JSON object only."
@@ -122,6 +141,10 @@ def prompt(
             "Severity must be critical, high, medium, low, or info.",
             "A clean result means no supported findings in reviewed evidence; "
             "it is not a security guarantee.",
+            "For each finding, cite the changed line and every file needed to prove the claim. "
+            "Use evidence entries with the exact commit, path, line, role, and source "
+            "(diff, auto_context, or read_file). Set cross_file_required only when "
+            "the claim depends on another file. Do not invent unrelated citations.",
         ],
         "allowed_tools": [
             {
@@ -145,8 +168,11 @@ def prompt(
         "pr_diff": diff if step == 0 else "See the initial prompt for the PR diff.",
         "local_findings": local_findings if step == 0 else None,
         "auto_context": auto_context if step == 0 else None,
+        "scanner_evidence": scanner_evidence if step == 0 else None,
         "coverage_pending": coverage_pending or [],
         "file_read_completed": file_read_completed,
+        "evidence_scope": evidence_scope,
+        "coverage_context": coverage_context,
         "tool_result": tool_result,
     }
 
@@ -262,7 +288,9 @@ def related_paths(changed: list[str], paths: list[str], contents: list[str]) -> 
     return [p for p in ranked if score(p)[0] > 0]
 
 
-async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
+async def automatic_context(
+    tools: RepositoryTools, diff: str, graph_result: dict | None = None
+) -> dict:
     """Fetch a small, explicit set of files at the immutable PR commit."""
     patches = json.loads(diff)
     changed = [p["file"] for p in patches if p.get("status") != "removed"]
@@ -271,6 +299,11 @@ async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
     # prepare a prompt that could be mistaken for a complete review.
     if any(path not in paths for path in changed):
         raise AdapterError("source_incomplete")
+    if graph_result and (
+        graph_result.get("commit") != tools.metadata.commit_sha
+        or not isinstance(graph_result.get("candidates"), list)
+    ):
+        graph_result = None
     included: list[dict] = []
     omitted: list[dict] = []
     total_chars = 0
@@ -289,7 +322,11 @@ async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
             continue
         included.append({"path": path, "kind": "changed", "content": file["content"]})
         total_chars += size
-    related = related_paths(changed, paths, [f["content"] for f in included])
+    heuristic = related_paths(changed, paths, [f["content"] for f in included])
+    graph_paths = [item["path"] for item in (graph_result or {}).get("candidates", [])
+                   if isinstance(item, dict) and item.get("path") in paths
+                   and item["path"] not in changed]
+    related = list(dict.fromkeys([*graph_paths, *heuristic]))
     related_count = 0
     for path in related:
         if related_count >= MAX_RELATED_FILES or len(included) >= MAX_AUTO_FILES:
@@ -307,12 +344,26 @@ async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
         total_chars += size
         related_count += 1
     included_paths = {item["path"] for item in included}
+    selected_graph_paths = included_paths.intersection(graph_paths)
     return {
         "commit": tools.metadata.commit_sha,
         "selection": (
+            "Changed files, then direct import graph neighbors, then matching names "
+            "or directory" if graph_result else
             "Changed files, then likely related unchanged files by imports, "
             "matching names, or directory"
         ),
+        "graph": {
+            "status": (
+                "used" if selected_graph_paths else
+                "not_selected" if graph_paths else
+                "no_neighbors" if graph_result else "fallback"
+            ),
+            "indexed_files": (graph_result or {}).get("indexed_files", 0),
+            "skipped_files": (graph_result or {}).get("skipped_files", 0),
+            "candidate_count": (graph_result or {}).get("candidate_count", 0),
+            "truncated": (graph_result or {}).get("truncated", False),
+        },
         "limits": {
             "files": MAX_AUTO_FILES,
             "related_files": MAX_RELATED_FILES,
@@ -326,12 +377,16 @@ async def automatic_context(tools: RepositoryTools, diff: str) -> dict:
     }
 
 
-async def initial_prompt(metadata: ScanMetadata) -> dict:
-    source = await GitHubSourceProvider().fetch(metadata)
-    tools = RepositoryTools(metadata)
-    await tools.ready()
+async def prepared_prompt(
+    metadata: ScanMetadata,
+    source: SourceBundle,
+    tools: RepositoryTools,
+    scanner_findings: list[Finding] | None = None,
+    scanner_status: str = "completed",
+    graph_result: dict | None = None,
+) -> dict:
     try:
-        context = await automatic_context(tools, source.diff)
+        context = await automatic_context(tools, source.diff, graph_result)
     except ValueError:
         raise AdapterError("source_incomplete") from None
     return prompt(
@@ -340,26 +395,94 @@ async def initial_prompt(metadata: ScanMetadata) -> dict:
         step=0,
         local_findings=[f.model_dump(mode="json") for f in source.local_findings],
         auto_context=context,
+        scanner_evidence=summarize_scanner_evidence(scanner_findings or [], status=scanner_status),
         coverage_pending=context["pending_changed_files"],
+        evidence_scope={
+            "commit": metadata.commit_sha,
+            "diff_lines": source.line_ranges,
+            "auto_context_paths": [item["path"] for item in context["included"]],
+            "read_file_paths": [],
+        },
+        coverage_context={
+            "omitted": context["omitted"],
+            "selection": context["selection"],
+            "graph": context["graph"],
+        },
     )
 
 
-async def checked_findings(metadata: ScanMetadata, findings: list[Finding], tools: RepositoryTools):
+async def initial_prompt(
+    metadata: ScanMetadata,
+    scanner_findings: list[Finding] | None = None,
+    scanner_status: str = "completed",
+    graph_result: dict | None = None,
+) -> dict:
+    source = await GitHubSourceProvider().fetch(metadata)
+    tools = RepositoryTools(metadata)
+    await tools.ready()
+    return await prepared_prompt(
+        metadata, source, tools, scanner_findings, scanner_status, graph_result
+    )
+
+
+async def checked_findings(
+    metadata: ScanMetadata,
+    findings: list[Finding],
+    tools: RepositoryTools,
+    *,
+    mode: ReviewMode = ReviewMode.manual,
+    evidence_scope: dict | None = None,
+):
     checked = []
     seen = set()
+    if findings and (not evidence_scope or evidence_scope.get("commit") != metadata.commit_sha):
+        raise ValueError("Evidence scope is missing or uses a different commit")
     for finding in findings:
         if not safe_path(finding.file_path):
             raise ValueError("Finding references an invalid file path")
-        file = await tools.read_file(finding.file_path)
-        lines = file["content"].splitlines()
-        if finding.line > len(lines):
-            raise ValueError("Finding line is outside the file")
+        if not finding.evidence:
+            raise ValueError("AI finding needs an evidence reference")
+        if not any(
+            ref.file_path == finding.file_path and ref.line == finding.line
+            for ref in finding.evidence
+        ):
+            raise ValueError("Finding location is not cited in its evidence")
+        if finding.cross_file_required and not any(
+            ref.file_path != finding.file_path for ref in finding.evidence
+        ):
+            raise ValueError("Cross-file finding needs evidence from another file")
+        for ref in finding.evidence:
+            if ref.commit_sha != metadata.commit_sha or not safe_path(ref.file_path):
+                raise ValueError("Evidence references a different commit or invalid path")
+            if ref.source == "diff":
+                spans = evidence_scope.get("diff_lines", {}).get(ref.file_path, [])
+                supplied = any(start <= ref.line <= end for start, end in spans)
+            elif ref.source == "auto_context":
+                supplied = ref.file_path in evidence_scope.get("auto_context_paths", [])
+            elif ref.source == "read_file":
+                supplied = ref.file_path in evidence_scope.get("read_file_paths", [])
+            else:
+                raise ValueError("Evidence source is not supported")
+            if not supplied:
+                raise ValueError("Evidence location was not supplied to the AI")
+            file = await tools.read_file(ref.file_path)
+            if file.get("commit") != metadata.commit_sha or file.get("path") != ref.file_path:
+                raise ValueError("Evidence file does not match the review commit")
+            if ref.line > len(file["content"].splitlines()):
+                raise ValueError("Evidence line is outside the file")
         key = (finding.rule_id, finding.file_path, finding.line)
-        if key not in seen:
-            checked.append(
-                finding.model_copy(
-                    update={"message": redact(finding.message), "rule_id": redact(finding.rule_id)}
-                )
+        if key in seen:
+            raise ValueError("Duplicate AI finding location")
+        checked.append(
+            finding.model_copy(
+                update={
+                    "message": redact(finding.message),
+                    "rule_id": redact(finding.rule_id),
+                    "origin": FindingOrigin.ai,
+                    "review_mode": mode,
+                    "evidence_status": EvidenceStatus.location_checked,
+                }
             )
-            seen.add(key)
+        )
+        seen.add(key)
     return checked

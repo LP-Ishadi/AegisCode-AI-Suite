@@ -126,7 +126,9 @@ def test_worker_hands_source_to_engine_and_persists_result():
     engine.analyze.assert_awaited_once_with(
         ScanMetadata.model_validate(jobs.claim.return_value["payload"]), source
     )
-    assert jobs.finish.call_args.kwargs["result"] == result
+    saved = jobs.finish.call_args.kwargs["result"]
+    assert saved.findings == result.findings
+    assert saved.coverage[0].mode.value == "legacy_ai"
     assert jobs.finish.call_args.kwargs["error"] is None
 
 
@@ -161,6 +163,15 @@ def test_worker_timeout_retries():
     asyncio.run(process_one(jobs, pipeline))
     assert jobs.finish.call_args.kwargs["error"] == "timeout"
     assert jobs.finish.call_args.kwargs["retryable"] is True
+
+
+def test_worker_rejects_clean_result_without_coverage():
+    jobs = queue()
+    pipeline = SimpleNamespace(run=AsyncMock(return_value=ScanResult(
+        findings=[], engine_version="test-engine"
+    )))
+    asyncio.run(process_one(jobs, pipeline))
+    assert jobs.finish.call_args.kwargs["error"] == "source_incomplete"
 
 
 def test_idle_worker_does_not_run_engine():
