@@ -25,4 +25,4 @@ def contains_secret(text: str) -> bool:
         pattern.search(text) for pattern in PATTERNS
     )
 
-# Test marker for import graph verification.
+# Test marker for import graph and manual review workflow verification.
