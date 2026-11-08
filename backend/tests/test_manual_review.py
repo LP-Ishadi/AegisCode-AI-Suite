@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import unittest
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from app.services.manual_review import (
     ToolCall,
     automatic_context,
     prompt,
+    record_file_read,
     require_context_for_clean,
     require_file_read,
 )
@@ -240,6 +242,70 @@ class ManualReviewTests(unittest.TestCase):
         self.assertTrue(all(metadata.commit_sha in path for path in calls))
         with self.assertRaises(ValueError):
             asyncio.run(tools.read_file("../other.py"))
+
+    def test_large_file_is_read_in_bounded_numbered_chunks(self):
+        metadata = ScanMetadata.model_construct(
+            repository_full_name="owner/repo", pull_request_number=3,
+            commit_sha="a" * 40, base_sha="b" * 40,
+        )
+        tools = RepositoryTools(metadata)
+        tools.token = "test-token"
+        content = "".join(f"line {number}: {'x' * 100}\n" for number in range(250))
+
+        async def request(method, path, token):
+            self.assertIn(metadata.commit_sha, path)
+            return {"type": "file", "encoding": "base64", "size": len(content),
+                    "content": base64.b64encode(content.encode()).decode()}
+
+        tools.api.request = request
+        first = asyncio.run(tools.read_file("app/large.py"))
+        self.assertFalse(first["complete"])
+        self.assertLessEqual(len(first["content"]), 16_000)
+        self.assertEqual(first["start_line"], 1)
+        second = asyncio.run(tools.read_file("app/large.py", first["next_start_line"]))
+        self.assertTrue(second["complete"])
+        self.assertEqual(second["start_line"], first["end_line"] + 1)
+        self.assertEqual(first["content"] + second["content"], content)
+        request_prompt = prompt(metadata, "", step=1, tool_result=first,
+                                coverage_pending=["app/large.py"])
+        self.assertEqual(request_prompt["example_next_reply"]["tool"]["start_line"],
+                         first["next_start_line"])
+        self.assertTrue(request_prompt["tool_result"]["content"].startswith("1: line 0"))
+        next_prompt = prompt(metadata, "", step=2, tool_result=second)
+        self.assertTrue(next_prompt["tool_result"]["content"].startswith(
+            f"{second['start_line']}: line {second['start_line'] - 1}"
+        ))
+
+        scope = {"read_file_paths": [], "read_file_ranges": {}}
+        pending = ["app/large.py"]
+        self.assertTrue(record_file_read(scope, pending, first))
+        self.assertEqual(pending, ["app/large.py"])
+        self.assertEqual(scope["read_file_paths"], [])
+        self.assertTrue(record_file_read(scope, pending, second))
+        self.assertEqual(pending, [])
+        self.assertEqual(scope["read_file_paths"], ["app/large.py"])
+
+    def test_large_changed_file_is_pending_until_chunks_are_read(self):
+        metadata = ScanMetadata.model_construct(
+            repository_full_name="owner/repo", pull_request_number=3,
+            commit_sha="a" * 40, base_sha="b" * 40,
+        )
+        tools = RepositoryTools(metadata)
+        tools.paths = ["app/large.py"]
+
+        async def read_file(path):
+            return {"path": path, "commit": metadata.commit_sha,
+                    "content": "partial source", "complete": False,
+                    "start_line": 1, "end_line": 1, "total_lines": 2,
+                    "next_start_line": 2}
+
+        tools.read_file = read_file
+        context = asyncio.run(automatic_context(
+            tools, json.dumps([{"file": "app/large.py", "status": "modified"}])
+        ))
+        self.assertEqual(context["included"], [])
+        self.assertEqual(context["pending_changed_files"], ["app/large.py"])
+        self.assertEqual(context["omitted"][0]["reason"], "requires_chunked_read")
 
     def test_automatic_context_includes_related_unchanged_file(self):
         metadata = ScanMetadata.model_construct(

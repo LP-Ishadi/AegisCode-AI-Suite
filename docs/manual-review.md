@@ -32,8 +32,12 @@ the model must request with `read_file` before submitting an empty final answer.
 Every manual review must also make at least one successful `read_file` tool call
 before any final answer, even when all changed files were supplied automatically.
 The backend rejects an early final answer with HTTP 422 and keeps the review active.
-If a changed file cannot be read within the tool limit, the manual review cannot
-finish clean. Paste the request into one AI conversation. Paste its
+Large text files are returned in numbered chunks. When a tool result includes
+`next_start_line`, ask the AI to request `read_file` again with the same path
+and `start_line` set to that number. A changed file stays in `coverage_pending`
+until all its chunks have been supplied. Files that cannot be read within the
+tool or source-size limits cannot finish clean. Paste the request into one AI
+conversation. Paste its
 JSON response back into the screen. The backend validates the reply and either
 fetches a tool result or commits final findings. Repeat until the final response.
 Return to the dashboard tab and refresh to see the saved final findings.
@@ -42,7 +46,8 @@ scan and PR remain **failed**. An empty manual answer cannot make a failed scan 
 Fix the scanner issue and run a new successful scan before treating the PR as passed.
 
 Allowed tools are `list_files`, `list_special_files`, and `read_file`. All operate
-against the immutable PR commit. File reads are limited to 16,000 characters;
+against the immutable PR commit. Each file read returns at most 16,000 characters
+from a text file of at most 512,000 bytes;
 the tree is limited to 2,000 entries; a review is limited to 20 steps. The model
 cannot write to GitHub or Supabase. Final findings must include `evidence`
 references. Each names its commit, repository path, 1-based line, role, and
@@ -83,8 +88,8 @@ rule, and message with facts from the current review request:
 ```
 
 Automatic context includes at most eight files total, of which at most four are
-related unchanged files, with a total of 64,000 characters. Individual reads
-still have the 16,000-character limit. Existing manual reviews keep their stored
+related unchanged files, with a total of 64,000 characters. Individual tool
+responses still have the 16,000-character limit. Existing manual reviews keep their stored
 prompts; start a new review on a new scan to use citation validation.
 
 The database stores each response, tool summary, and the next redacted prompt so

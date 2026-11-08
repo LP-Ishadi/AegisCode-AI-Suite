@@ -164,3 +164,19 @@ def test_wrong_line_excerpt_is_rejected_and_correct_one_is_not_persisted():
     checked = asyncio.run(checked_findings(metadata, [wrong], tools, evidence_scope=scope))
     assert checked[0].evidence[0].line_excerpt is None
     assert "return authorize()" not in str(checked[0].model_dump())
+
+
+def test_partial_read_only_allows_citations_from_supplied_lines():
+    metadata, tools, scope = setup()
+    scope["read_file_paths"] = []
+    scope["read_file_ranges"] = {"app/route.py": [[1, 1]]}
+    cited_second_line = proposal(evidence=[ref(source="read_file")])
+    with pytest.raises(ValueError, match="not supplied"):
+        asyncio.run(checked_findings(
+            metadata, [cited_second_line], tools, evidence_scope=scope
+        ))
+    scope["read_file_ranges"]["app/route.py"].append([2, 2])
+    checked = asyncio.run(checked_findings(
+        metadata, [cited_second_line], tools, evidence_scope=scope
+    ))
+    assert checked[0].evidence_status is EvidenceStatus.location_checked

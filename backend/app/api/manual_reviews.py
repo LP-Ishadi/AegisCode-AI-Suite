@@ -20,6 +20,7 @@ from app.services.manual_review import (
     checked_findings,
     initial_prompt,
     prompt,
+    record_file_read,
     require_context_for_clean,
     require_file_read,
 )
@@ -208,14 +209,10 @@ async def submit_response(review_id: UUID, submission: Submission, user: Authent
         coverage_context = review["prompt"].get("coverage_context")
         if reply.kind == "tool":
             result = await tools.execute(reply.tool)
-            if reply.tool.name == "read_file" and reply.tool.path in pending:
-                pending.remove(reply.tool.path)
-            if reply.tool.name == "read_file" and "content" in result:
-                file_read_completed = True
-                if evidence_scope is not None:
-                    paths = evidence_scope.setdefault("read_file_paths", [])
-                    if reply.tool.path not in paths:
-                        paths.append(reply.tool.path)
+            if reply.tool.name == "read_file":
+                file_read_completed = (
+                    record_file_read(evidence_scope, pending, result) or file_read_completed
+                )
             next_prompt = prompt(
                 metadata,
                 "",
