@@ -10,6 +10,7 @@ from postgrest.exceptions import APIError
 from pydantic import ValidationError
 
 from app.api import manual_reviews
+from app.main import manual_review_validation_detail
 from app.models.dispatch import ScanMetadata
 from app.services.manual_review import (
     ModelReply,
@@ -63,6 +64,73 @@ class ManualReviewTests(unittest.TestCase):
         self.assertIn("properties", request["output_schema"])
         self.assertFalse(request["file_read_completed"])
         self.assertIn("must request read_file", request["system"])
+        self.assertEqual(request["example_next_reply"]["tool"]["name"], "list_files")
+        self.assertIn("120 characters", request["security_rules"][-1])
+        self.assertEqual(request["output_limits"]["evidence_role_max_characters"], 120)
+        self.assertEqual(request["output_limits"]["evidence_line_excerpt_max_characters"], 240)
+        self.assertIn("line_excerpt", request["response_examples"]["finding_evidence"])
+
+    def test_new_review_schema_requires_evidence_excerpt(self):
+        metadata = ScanMetadata.model_construct(
+            repository_full_name="owner/repo", pull_request_number=3,
+            commit_sha="a" * 40, base_sha="b" * 40,
+        )
+        request = prompt(metadata, "", step=0,
+                         evidence_scope={"require_line_excerpt": True})
+        reference = request["output_schema"]["$defs"]["EvidenceReference"]
+        self.assertIn("line_excerpt", reference["required"])
+        self.assertEqual(reference["properties"]["line_excerpt"]["type"], "string")
+        old_request = prompt(metadata, "", step=0, evidence_scope={})
+        old_reference = old_request["output_schema"]["$defs"]["EvidenceReference"]
+        self.assertNotIn("line_excerpt", old_reference["required"])
+
+    def test_invalid_ai_response_names_field_without_echoing_content(self):
+        secret = "sensitive-value-" + "x" * 120
+        with self.assertRaises(ValidationError) as caught:
+            manual_reviews.Submission.model_validate({
+                "step": 0,
+                "response": {
+                    "kind": "final",
+                    "findings": [{
+                        "rule_id": "security.issue", "file_path": "app.py", "line": 1,
+                        "severity": "high", "message": "A concrete finding",
+                        "evidence": [{"commit_sha": "a" * 40, "file_path": "app.py",
+                                      "line": 1, "role": secret, "source": "diff",
+                                      "line_excerpt": "print('ok')"}],
+                    }],
+                },
+            })
+        from fastapi.exceptions import RequestValidationError
+        detail = manual_review_validation_detail(RequestValidationError(caught.exception.errors()))
+        self.assertIn("response.findings.0.evidence.0.role", detail)
+        self.assertIn("120 characters or fewer", detail)
+        self.assertNotIn(secret, detail)
+
+    def test_evidence_role_allows_short_explanation_over_old_limit(self):
+        role = "service client documented as trusted-only"
+        self.assertGreater(len(role), 40)
+        reply = ModelReply.model_validate({
+            "kind": "final",
+            "findings": [{
+                "rule_id": "security.issue", "file_path": "app.py", "line": 1,
+                "severity": "high", "message": "A concrete finding",
+                "evidence": [{"commit_sha": "a" * 40, "file_path": "app.py",
+                              "line": 1, "role": role, "source": "diff",
+                              "line_excerpt": "print('ok')"}],
+            }],
+        })
+        self.assertEqual(reply.findings[0].evidence[0].role, role)
+
+    def test_old_ai_reply_without_excerpt_remains_parseable(self):
+        reply = ModelReply.model_validate({
+                "kind": "final", "findings": [{
+                    "rule_id": "security.issue", "file_path": "app.py", "line": 1,
+                    "severity": "high", "message": "A concrete finding",
+                    "evidence": [{"commit_sha": "a" * 40, "file_path": "app.py",
+                                  "line": 1, "role": "changed code", "source": "diff"}],
+                }],
+            })
+        self.assertIsNone(reply.findings[0].evidence[0].line_excerpt)
 
     def test_final_requires_successful_read_file_tool_call(self):
         with self.assertRaisesRegex(ValueError, "Call read_file"):
@@ -153,7 +221,8 @@ class ManualReviewTests(unittest.TestCase):
 
     def test_read_file_uses_immutable_commit_and_rejects_invalid_path(self):
         metadata = ScanMetadata.model_construct(
-            repository_full_name="owner/repo", commit_sha="a" * 40
+            repository_full_name="owner/repo", pull_request_number=3,
+            commit_sha="a" * 40, base_sha="b" * 40,
         )
         tools = RepositoryTools(metadata)
         tools.token = "test-token"
@@ -166,12 +235,17 @@ class ManualReviewTests(unittest.TestCase):
         tools.api.request = request
         result = asyncio.run(tools.read_file("src/app.py"))
         self.assertEqual(result["content"], "print()")
+        request = prompt(metadata, "", step=1, tool_result=result)
+        self.assertEqual(request["tool_result"]["content"], "1: print()")
         self.assertTrue(all(metadata.commit_sha in path for path in calls))
         with self.assertRaises(ValueError):
             asyncio.run(tools.read_file("../other.py"))
 
     def test_automatic_context_includes_related_unchanged_file(self):
-        metadata = ScanMetadata.model_construct(commit_sha="a" * 40)
+        metadata = ScanMetadata.model_construct(
+            repository_full_name="owner/repo", pull_request_number=3,
+            commit_sha="a" * 40, base_sha="b" * 40,
+        )
         tools = RepositoryTools(metadata)
         tools.paths = ["app/auth.py", "app/permissions.py", "tests/test_auth.py"]
         contents = {
@@ -190,6 +264,11 @@ class ManualReviewTests(unittest.TestCase):
         self.assertEqual(included["app/auth.py"], "changed")
         self.assertEqual(included["app/permissions.py"], "related_unchanged")
         self.assertEqual(context["pending_changed_files"], [])
+        request = prompt(metadata, diff, step=0, auto_context=context)
+        numbered = {item["path"]: item["content"]
+                    for item in request["auto_context"]["included"]}
+        self.assertEqual(numbered["app/auth.py"],
+                         "1: from app.permissions import can_access")
 
     def test_unreadable_changed_file_remains_pending(self):
         metadata = ScanMetadata.model_construct(

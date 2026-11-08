@@ -5,8 +5,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.models.dispatch import ScanMetadata
-from app.models.schemas import EvidenceReference, EvidenceStatus, Finding, ReviewMode
-from app.services.manual_review import checked_findings
+from app.models.schemas import (
+    EvidenceReference,
+    EvidenceStatus,
+    Finding,
+    ReviewMode,
+)
+from app.services.manual_review import AIProposal, checked_findings
 
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
@@ -132,3 +137,30 @@ def test_redacted_file_can_be_cited_without_persisting_secret_text():
     checked = asyncio.run(checked_findings(metadata, [item], tools, evidence_scope=scope))
     assert checked[0].evidence[0].file_path == "app/secret.py"
     assert "content" not in checked[0].evidence[0].model_dump()
+
+
+def test_wrong_line_excerpt_is_rejected_and_correct_one_is_not_persisted():
+    metadata, tools, scope = setup()
+    scope["require_line_excerpt"] = True
+    wrong = AIProposal(
+        rule_id="security.authorization", file_path="app/route.py", line=2,
+        severity="high", message="Check authorization", cross_file_required=True,
+        evidence=[
+            EvidenceReference(commit_sha=SHA, file_path="app/route.py", line=2,
+                                role="changed code", source="diff",
+                                line_excerpt="return authorize()"),
+            EvidenceReference(commit_sha=SHA, file_path="app/auth.py", line=2,
+                                role="authorization call", source="auto_context",
+                                line_excerpt="return authorize()"),
+        ],
+    )
+    # The AI claimed this line calls authorize, but line 2 actually returns True.
+    with pytest.raises(ValueError, match="app/auth.py:2.*does not match"):
+        asyncio.run(checked_findings(metadata, [wrong], tools, evidence_scope=scope))
+
+    wrong.evidence[1] = wrong.evidence[1].model_copy(update={
+        "line_excerpt": "return True"
+    })
+    checked = asyncio.run(checked_findings(metadata, [wrong], tools, evidence_scope=scope))
+    assert checked[0].evidence[0].line_excerpt is None
+    assert "return authorize()" not in str(checked[0].model_dump())
