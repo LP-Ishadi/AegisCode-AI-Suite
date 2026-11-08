@@ -1,8 +1,8 @@
-# Enable GitHub source fetching and OpenAI diff review
+# Enable GitHub source fetching and optional AI review
 
 The worker fetches an immutable GitHub comparison using a short-lived, repository-scoped
 GitHub App installation token, checks patch completeness, redacts common secrets, and
-asks OpenAI for structured findings. Findings and scan/PR statuses are committed together
+optionally asks a selected AI provider for structured findings. Findings and scan/PR statuses are committed together
 using the existing leased queue. The signed-in dashboard refreshes every 15 seconds while
 visible. No repository checkout or source file is persisted locally or in Supabase.
 
@@ -43,13 +43,12 @@ Expect 200, then 401. This verifies local configuration and HMAC; GitHub's own s
 secret must still match. Add `--url https://YOUR-TUNNEL/api/v1/webhooks/github` to test
 through Ngrok.
 
-## 2. Apply the new migration
+## 2. Apply migrations
 
-In your Supabase SQL Editor, run **only**
-`supabase/migrations/202610200001_live_scan_adapters.sql` once, after the two existing
-migrations. Do not rerun the foundation script or drop tables. This adds explicit AI
-opt-in, precise mapping errors, protected repository registration, new failure codes,
-and a service-only retry RPC. Existing repositories default to AI disabled.
+For a new database, apply all files in `supabase/migrations/` in filename order.
+For an existing database, apply only migrations that have not already run.
+Do not rerun the foundation script or drop tables. Stage 5 provider selection
+requires no new migration. Existing repositories default to AI disabled.
 
 ## 3. Configure credentials in the root `.env`
 
@@ -61,9 +60,7 @@ Generate/download a private key from the App settings. Set:
 ```dotenv
 GITHUB_APP_ID=your_app_id
 GITHUB_APP_PRIVATE_KEY_B64=one_line_base64_of_downloaded_pem
-AI_SCANNING_ENABLED=true
-OPENAI_API_KEY=your_real_openai_api_key
-OPENAI_MODEL=gpt-4o
+AI_SCANNING_ENABLED=false
 SCAN_MAX_FILES=80
 SCAN_MAX_DIFF_CHARS=100000
 ```
@@ -74,12 +71,21 @@ On macOS, copy a one-line encoding to the clipboard without printing the key:
 base64 < /absolute/path/to/downloaded-private-key.pem | tr -d '\n' | pbcopy
 ```
 
-Paste it as `GITHUB_APP_PRIVATE_KEY_B64`. Keep the PEM outside the repository. The model
-must support the Responses API and structured outputs, and be available to your OpenAI
-project. Configure provider spending limits. Source/redaction is best-effort: enabling
-AI authorizes sending potentially proprietary code to OpenAI. `store=False` disables
-Responses storage, but does not promise zero provider retention or zero data egress.
-Claude is not invoked. The separate worker now also runs Semgrep, Trivy, and
+Paste it as `GITHUB_APP_PRIVATE_KEY_B64`. Keep the PEM outside the repository.
+For automated review, set `AI_SCANNING_ENABLED=true`, select one provider, and
+enable AI on the repository in step 4:
+
+| Provider | Root `.env` settings | Requirement |
+| --- | --- | --- |
+| Groq | `AI_PROVIDER=groq`, `GROQ_API_KEY=...`, `GROQ_MODEL=...` | A Groq API key and a model that supports JSON object responses. Check current availability and quotas with Groq. |
+| Ollama | `AI_PROVIDER=ollama`, `OLLAMA_MODEL=...`, `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` | A running local Ollama server and downloaded model with JSON response support; it must be reachable from the worker container. No cloud API key. |
+| OpenAI | `AI_PROVIDER=openai`, `OPENAI_API_KEY=...`, `OPENAI_MODEL=...` | An API key and model supporting the Responses API and structured outputs. |
+
+The same bounded prompts, file tools, and finding checks apply to each provider.
+Source redaction is best-effort; cloud providers receive potentially proprietary
+code. OpenAI requests set `store=False`, which does not promise zero provider
+retention. The automated loop currently allows at most five model steps and is
+not yet a resumable AI job. The separate worker runs Semgrep, Trivy, and
 TruffleHog when started through Docker Compose; see [scanner suite](scanner-suite.md).
 
 Rebuild and recreate the containers:
@@ -126,7 +132,7 @@ docker compose exec backend python -m app.cli.connect_repository \
 The command verifies the installation with your GitHub App, obtains the real immutable
 repository ID, and maps it to your chosen organization. It refuses to move an existing
 repository between organizations. `--enable-ai` explicitly opts this repository into
-OpenAI review; omitting it disables AI for that mapping. Only run this command as a
+automated review with the selected provider; omitting it disables AI for that mapping. Only run this command as a
 trusted administrator. Dashboard users must belong to that same organization to see data.
 Repository renames no longer cause webhook 403 solely due to a stale stored name; run
 this command again with the current name to update the displayed repository name.
@@ -168,13 +174,13 @@ for a running/completed scan or an older revision. Never manually reset a runnin
 - `ai_not_authorized`: global AI setting or per-repository opt-in disabled.
 - `github_configuration` / `github_access_denied`: invalid key, permissions, inaccessible
   commit/repo, or installation removed; verify GitHub App setup.
-- `ai_configuration`: missing/invalid key, unsupported model/request.
+- `ai_configuration`: missing selected-provider key/model or unsupported model/request.
 - `source_incomplete`: comparison exceeds bounds, commits are paginated, or any patch is
   binary, missing, truncated or unsupported. No partial review is reported as clean.
 - `invalid_ai_output`: refusal, incomplete response or findings outside supplied paths/lines.
 - `upstream_unavailable` / `timeout`: retryable network/provider error, up to three attempts.
 
-This is bounded **diff review**, not full-repository SAST. Comparisons with more than
+This is bounded **changed-code and related-context review**, not full-repository SAST. Comparisons with more than
 100 commits, more than the configured file limit, missing/rename-only patches, or over
 100,000 diff characters fail explicitly. Fork comparisons work when GitHub can resolve
 the pinned head SHA through the base repository; inaccessible SHAs fail explicitly.

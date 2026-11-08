@@ -1,4 +1,4 @@
-"""Bounded OpenAI review of PR, scanner evidence, and immutable repository files."""
+"""Bounded provider-independent review of immutable PR evidence."""
 
 import json
 
@@ -9,6 +9,7 @@ from app.core.config import Settings, get_settings
 from app.models.dispatch import ScanMetadata, ScanResult, SourceBundle
 from app.models.schemas import Finding, ReviewMode
 from app.services.adapter_errors import AdapterError
+from app.services.ai_providers import selected_provider
 from app.services.coverage_ledger import ai_coverage
 from app.services.manual_review import (
     ModelReply,
@@ -37,8 +38,9 @@ class ContextReviewEngine:
         scanner_findings: list[Finding],
         graph_result: dict | None = None,
     ) -> ScanResult:
-        if not self.settings.ai_scanning_enabled or not self.settings.openai_api_key:
+        if not self.settings.ai_scanning_enabled:
             raise AdapterError("ai_configuration")
+        provider = selected_provider(self.settings)
         if source.commit_sha != metadata.commit_sha:
             raise AdapterError("source_incomplete")
         tools = RepositoryTools(metadata)
@@ -54,25 +56,39 @@ class ContextReviewEngine:
         coverage_context = request.get("coverage_context")
 
         try:
-            async with self.client_factory(
-                api_key=self.settings.openai_api_key.get_secret_value(),
-                timeout=35,
-                max_retries=0,
-            ) as client:
+            client_options = {"api_key": provider.api_key, "timeout": 35, "max_retries": 0}
+            if provider.base_url:
+                client_options["base_url"] = provider.base_url
+            async with self.client_factory(**client_options) as client:
                 for step in range(MAX_MODEL_STEPS):
                     if len(json.dumps(messages)) > MAX_CONVERSATION_CHARS:
                         raise AdapterError("source_incomplete")
-                    response = await client.responses.parse(
-                        model=self.settings.openai_model,
-                        instructions=instructions,
-                        input=messages,
-                        text_format=ModelReply,
-                        max_output_tokens=4000,
-                        store=False,
-                    )
-                    if response.status != "completed" or response.output_parsed is None:
-                        raise AdapterError("invalid_ai_output")
-                    reply = ModelReply.model_validate(response.output_parsed)
+                    if provider.chat_completions:
+                        response = await client.chat.completions.create(
+                            model=provider.model,
+                            messages=[{"role": "system", "content": instructions}, *messages],
+                            response_format={"type": "json_object"},
+                            max_tokens=4000,
+                        )
+                        if (len(response.choices) != 1
+                            or response.choices[0].finish_reason != "stop"
+                            or not response.choices[0].message.content):
+                            raise AdapterError("invalid_ai_output")
+                        reply = ModelReply.model_validate_json(
+                            response.choices[0].message.content
+                        )
+                    else:
+                        response = await client.responses.parse(
+                            model=provider.model,
+                            instructions=instructions,
+                            input=messages,
+                            text_format=ModelReply,
+                            max_output_tokens=4000,
+                            store=False,
+                        )
+                        if response.status != "completed" or response.output_parsed is None:
+                            raise AdapterError("invalid_ai_output")
+                        reply = ModelReply.model_validate(response.output_parsed)
                     if reply.kind == "final":
                         try:
                             require_file_read(file_read_completed)
@@ -94,7 +110,7 @@ class ContextReviewEngine:
                             continue
                         return ScanResult(
                             findings=findings,
-                            engine_version=f"openai-context/{self.settings.openai_model}",
+                            engine_version=f"{provider.name}-context/{provider.model}"[:100],
                             review_mode=ReviewMode.automated,
                             coverage=[ai_coverage(
                                 metadata.commit_sha, ReviewMode.automated,
@@ -138,6 +154,6 @@ class ContextReviewEngine:
                 else "ai_configuration",
                 retryable=exc.status_code == 429 or exc.status_code >= 500,
             ) from None
-        except (ValidationError, ValueError, TypeError):
+        except (ValidationError, ValueError, TypeError, AttributeError, IndexError, KeyError):
             raise AdapterError("invalid_ai_output") from None
         raise AdapterError("invalid_ai_output")

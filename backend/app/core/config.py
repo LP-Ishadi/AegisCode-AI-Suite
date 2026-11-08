@@ -19,14 +19,19 @@ class Settings(BaseSettings):
     supabase_anon_key: SecretStr | None = None
     supabase_service_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
+    groq_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
     github_webhook_secret: SecretStr | None = None
     github_app_id: str = ""
     github_app_private_key_b64: SecretStr | None = None
     ai_scanning_enabled: bool = False
+    ai_provider: Literal["openai", "groq", "ollama"] = "openai"
     scanners_enabled: bool = False
     scanner_service_url: AnyHttpUrl | None = None
     openai_model: str = Field(default="gpt-4o", max_length=80)
+    groq_model: str = Field(default="openai/gpt-oss-20b", max_length=80)
+    ollama_model: str = Field(default="", max_length=80)
+    ollama_base_url: AnyHttpUrl = AnyHttpUrl("http://host.docker.internal:11434/v1")
     scan_max_files: int = Field(default=80, ge=1, le=299)
     scan_max_diff_chars: int = Field(default=100_000, ge=1000, le=180_000)
     redis_url: SecretStr | None = None
