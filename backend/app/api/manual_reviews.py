@@ -62,8 +62,9 @@ def operator_scan(user: AuthenticatedUser, scan_id: UUID) -> dict:
 
 def load_review(user: AuthenticatedUser, review_id: UUID) -> dict:
     try:
+        review_client = user.client
         rows = (
-            user.client.table("manual_reviews")
+            review_client.table("manual_reviews")
             .select("*")
             .eq("id", str(review_id))
             .limit(1)
