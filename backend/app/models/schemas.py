@@ -63,8 +63,10 @@ class EvidenceReference(StrictModel):
     commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     file_path: str = Field(min_length=1, max_length=1024)
     line: int = Field(ge=1)
-    role: str = Field(min_length=1, max_length=40)
+    role: str = Field(min_length=1, max_length=120)
     source: str = Field(min_length=1, max_length=40)
+    # Optional for reviews started before excerpt validation was introduced.
+    line_excerpt: str | None = Field(default=None, min_length=1, max_length=240)
 
 
 class ReviewCoverage(StrictModel):

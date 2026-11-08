@@ -96,6 +96,35 @@ def require_file_read(completed: bool) -> None:
         raise ValueError("Call read_file on at least one repository file before a final review")
 
 
+def numbered_content(content: str) -> str:
+    """Display the exact one-based line numbers used by evidence validation."""
+    return "\n".join(f"{number}: {line}" for number, line in enumerate(content.splitlines(), 1))
+
+
+def display_file_content(data: dict | None) -> dict | None:
+    if not data:
+        return data
+    displayed = data.copy()
+    if isinstance(displayed.get("content"), str):
+        displayed["content"] = numbered_content(displayed["content"])
+        displayed["content_format"] = "One-based line number followed by source text"
+    if isinstance(displayed.get("included"), list):
+        displayed["included"] = [display_file_content(item) for item in displayed["included"]]
+    return displayed
+
+
+def reply_schema(require_line_excerpt: bool) -> dict:
+    schema = ModelReply.model_json_schema()
+    if require_line_excerpt:
+        reference = schema["$defs"]["EvidenceReference"]
+        reference["properties"]["line_excerpt"] = {
+            "type": "string", "minLength": 1, "maxLength": 240,
+            "description": "Exact text from the cited line at the PR commit",
+        }
+        reference["required"].append("line_excerpt")
+    return schema
+
+
 def prompt(
     metadata: ScanMetadata,
     diff: str,
@@ -110,6 +139,16 @@ def prompt(
     evidence_scope: dict | None = None,
     coverage_context: dict | None = None,
 ) -> dict:
+    pending = coverage_pending or []
+    suggested_paths = pending or (evidence_scope or {}).get("auto_context_paths", []) or list(
+        (evidence_scope or {}).get("diff_lines", {})
+    )
+    next_action = (
+        {"kind": "tool", "tool": {"name": "read_file", "path": suggested_paths[0]}}
+        if not file_read_completed and suggested_paths else
+        {"kind": "tool", "tool": {"name": "list_files"}}
+        if not file_read_completed else None
+    )
     return {
         "version": "manual-review-v1",
         "step": step,
@@ -145,7 +184,46 @@ def prompt(
             "Use evidence entries with the exact commit, path, line, role, and source "
             "(diff, auto_context, or read_file). Set cross_file_required only when "
             "the claim depends on another file. Do not invent unrelated citations.",
+            "Keep each evidence role to 120 characters or fewer. Verify the cited line "
+            "in the supplied content; a real path and line alone do not prove a claim. "
+            "For every evidence entry include line_excerpt copied from the cited numbered "
+            "source line, excluding its number. Quote the statement that supports its role; "
+            "do not cite a nearby line. If a citation is rejected, request read_file and "
+            "correct the citation before retrying. The backend checks excerpt location, "
+            "not whether the security conclusion is true.",
         ],
+        "output_limits": {
+            "evidence_role_max_characters": 120,
+            "evidence_line_excerpt_max_characters": 240,
+            "evidence_source_values": ["diff", "auto_context", "read_file"],
+        },
+        "next_required_action": (
+            "Request read_file for a relevant repository file before a final answer. "
+            "The backend rejects final answers until a read_file call succeeds."
+            if not file_read_completed else
+            "Continue requesting files when evidence is incomplete; a final answer is "
+            "allowed after changed files in coverage_pending have been reviewed."
+        ),
+        "example_next_reply": next_action,
+        "response_examples_note": (
+            "Examples show format only; replace paths, lines, and claims with "
+            "verified PR evidence."
+        ),
+        "response_examples": {
+            "tool": {
+                "kind": "tool",
+                "tool": {"name": "read_file", "path": "path/from/repository.py"},
+            },
+            "clean_final": {"kind": "final", "findings": []},
+            "finding_evidence": {
+                "commit_sha": metadata.commit_sha,
+                "file_path": "path/from/repository.py",
+                "line": 1,
+                "role": "vulnerable statement",
+                "source": "diff",
+                "line_excerpt": "exact text from cited source line",
+            },
+        },
         "allowed_tools": [
             {
                 "name": "list_files",
@@ -163,17 +241,17 @@ def prompt(
                 "purpose": "Read a bounded file at the PR commit",
             },
         ],
-        "output_schema": ModelReply.model_json_schema(),
+        "output_schema": reply_schema(bool((evidence_scope or {}).get("require_line_excerpt"))),
         "schema_rule": "For kind=tool provide tool only; for kind=final provide findings only.",
         "pr_diff": diff if step == 0 else "See the initial prompt for the PR diff.",
         "local_findings": local_findings if step == 0 else None,
-        "auto_context": auto_context if step == 0 else None,
+        "auto_context": display_file_content(auto_context) if step == 0 else None,
         "scanner_evidence": scanner_evidence if step == 0 else None,
-        "coverage_pending": coverage_pending or [],
+        "coverage_pending": pending,
         "file_read_completed": file_read_completed,
         "evidence_scope": evidence_scope,
         "coverage_context": coverage_context,
-        "tool_result": tool_result,
+        "tool_result": display_file_content(tool_result),
     }
 
 
@@ -399,6 +477,7 @@ async def prepared_prompt(
         coverage_pending=context["pending_changed_files"],
         evidence_scope={
             "commit": metadata.commit_sha,
+            "require_line_excerpt": True,
             "diff_lines": source.line_ranges,
             "auto_context_paths": [item["path"] for item in context["included"]],
             "read_file_paths": [],
@@ -470,6 +549,15 @@ async def checked_findings(
                 raise ValueError("Evidence file does not match the review commit")
             if ref.line > len(file["content"].splitlines()):
                 raise ValueError("Evidence line is outside the file")
+            if evidence_scope.get("require_line_excerpt"):
+                excerpt = (ref.line_excerpt or "").strip()
+                source_line = file["content"].splitlines()[ref.line - 1]
+                if not excerpt or excerpt not in source_line:
+                    raise ValueError(
+                        f"Evidence {ref.file_path}:{ref.line} does not match its line_excerpt "
+                        "at the PR commit. Request read_file for this path, then correct "
+                        "the line, excerpt, and role before retrying. No finding was saved."
+                    )
         key = (finding.rule_id, finding.file_path, finding.line)
         if key in seen:
             raise ValueError("Duplicate AI finding location")
@@ -481,6 +569,9 @@ async def checked_findings(
                     "origin": FindingOrigin.ai,
                     "review_mode": mode,
                     "evidence_status": EvidenceStatus.location_checked,
+                    "evidence": [EvidenceReference.model_validate(ref.model_dump(
+                        exclude={"line_excerpt"}
+                    )) for ref in finding.evidence],
                 }
             )
         )

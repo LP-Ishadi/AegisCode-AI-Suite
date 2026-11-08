@@ -102,11 +102,21 @@ supported mode, including after an automated provider is added.
    paths/lines or citations to content never supplied. Allow one-file proof
    where appropriate; require a second-file citation only when the claim
    depends on a caller, permission check, data flow, or configuration elsewhere.
-3. **Evidence outcome:** Store `supported_location`, `unverified`, or
-   `rejected` separately from the finding's origin and severity. Matching
-   snippets and valid line numbers are structural checks, not semantic proof.
+3. **Evidence outcome:** Store `location_checked` or `unverified` separately
+   from the finding's origin and severity; reject unsupported citations before
+   saving the finding. Matching snippets and valid line numbers are structural
+   checks, not semantic proof.
    Avoid claiming “scanner confirmed” for AI-only findings or assigning
    arbitrary confidence percentages. Give reviewers a human triage action.
+
+   New manual reviews display numbered source lines and require each AI citation
+   to include a short `line_excerpt` copied from the cited line. The backend
+   fetches that file at the PR commit and rejects a citation when its excerpt
+   does not occur on the stated line. The error names the path and line so the
+   reviewer can ask the AI to read the file and correct its response. Reviews
+   started before this requirement remain compatible. This checks the cited
+   location; a human still needs to judge whether the line supports the security
+   claim. Excerpts are used for validation and are not saved with findings.
 4. **Deduplication:** Link overlapping scanner and AI records rather than
    double counting them. Keep both original sources and their provenance.
    Do not discard a new AI claim solely because it shares a file and line

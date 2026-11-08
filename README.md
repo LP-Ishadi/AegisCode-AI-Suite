@@ -100,7 +100,9 @@ first. The scanner workflow needs **no AI API key**.
    `202611070001_current_image_findings.sql` before loading the updated
    dashboard; it scopes Docker advisory counts to the last completed scan
    per repository. Apply `202611080001_scan_context_graph.sql` before
-   rebuilding the scanner and scan worker for graph-guided context.
+   rebuilding the scanner and scan worker for graph-guided context. Apply
+   `202611080002_evidence_role_limit.sql` before rebuilding the backend for
+   manual review; it raises the evidence role limit to 120 characters.
 3. From the **repository root**, start the services:
 
    ```sh

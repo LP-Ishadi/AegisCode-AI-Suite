@@ -1,4 +1,5 @@
 import logging
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -9,6 +10,36 @@ from app.api import auth, manual_reviews, repos, webhooks
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def manual_review_validation_detail(exc: RequestValidationError) -> str:
+    """Explain model errors without echoing pasted source code or AI output."""
+    messages = []
+    for error in exc.errors()[:5]:
+        location = ".".join(
+            str(part) for part in error.get("loc", ())
+            if isinstance(part, int) or
+            (isinstance(part, str) and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", part))
+        )
+        kind = error.get("type")
+        if kind == "string_too_long":
+            limit = error.get("ctx", {}).get("max_length")
+            explanation = (
+                f"must be {limit} characters or fewer"
+                if isinstance(limit, int) else "is too long"
+            )
+        elif kind == "string_too_short":
+            explanation = "must not be empty"
+        elif kind == "missing":
+            explanation = "is required"
+        elif kind == "extra_forbidden":
+            explanation = "is not allowed"
+        elif kind in ("literal_error", "string_pattern_mismatch", "enum"):
+            explanation = "has an unsupported value; check the response examples and schema"
+        else:
+            explanation = "has an invalid value; check the response examples and schema"
+        messages.append(f"{location}: {explanation}" if location else explanation)
+    return "AI JSON response is invalid: " + "; ".join(messages)
 
 
 def create_app() -> FastAPI:
@@ -40,6 +71,10 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, exc: RequestValidationError):
+        if request.url.path.startswith("/api/v1/manual-reviews/"):
+            return JSONResponse(
+                status_code=422, content={"detail": manual_review_validation_detail(exc)}
+            )
         return JSONResponse(status_code=422, content={"detail": "Invalid request parameters"})
 
     @app.exception_handler(Exception)
