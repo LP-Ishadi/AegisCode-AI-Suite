@@ -104,7 +104,7 @@ appropriate retention policy before using this on sensitive repositories.
 The [scanner suite](scanner-suite.md) runs in the separate PR worker and writes
 findings to the same scan records. This manual review can follow either a completed
 or failed scanner run. SonarQube remains a later integration.
-The scanner pipeline's automated OpenAI path now uses the same bounded file tools
-and review gate when an API key and repository authorization are configured. See
+The scanner pipeline's automated provider path uses the same bounded file tools
+and review gate when the selected provider is configured and repository authorization is enabled. See
 [automated review architecture](ai-review-architecture.md) for current limits and
 the remaining accuracy work.

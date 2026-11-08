@@ -97,7 +97,7 @@ class ScannerPipeline:
         engine_version = result.engine_version
         review_mode = ReviewMode.scanner_only
         coverage = [scanner_coverage(metadata.commit_sha, snapshot.paths)]
-        if settings.ai_scanning_enabled and settings.openai_api_key:
+        if settings.ai_scanning_enabled:
             repo = await asyncio.to_thread(self.authorize, metadata)
             if repo.get("ai_scan_enabled") is True:
                 source = await self.source.fetch(metadata)
@@ -110,7 +110,7 @@ class ScannerPipeline:
                 findings.extend(
                     f for f in ai_result.findings if (f.rule_id, f.file_path, f.line) not in seen
                 )
-                engine_version += "+openai-context"
+                engine_version = (engine_version + "+" + ai_result.engine_version)[:100]
                 review_mode = ReviewMode.automated
                 if not ai_result.coverage:
                     raise AdapterError("source_incomplete")

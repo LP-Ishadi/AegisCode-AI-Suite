@@ -57,7 +57,7 @@ def main():
     parser.add_argument(
         "--enable-ai",
         action="store_true",
-        help="Authorize sending redacted diffs from this repo to OpenAI",
+        help="Authorize sending bounded repository context to the selected AI provider",
     )
     args = parser.parse_args()
     try:

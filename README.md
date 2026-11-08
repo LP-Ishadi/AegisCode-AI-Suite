@@ -5,8 +5,8 @@ PR events to the backend; a durable worker fetches the exact commit and runs
 Semgrep, Trivy, and TruffleHog in a separate scanner container. Results are
 stored in Supabase and shown in a React dashboard. A separate manual review
 window lets an operator copy a structured prompt into an AI chat and submit
-its JSON reply. Automated AI review is optional and currently needs an API
-key; the scanner workflow does not.
+its JSON reply. Automated AI review is optional: it can use OpenAI, Groq, or
+a locally hosted Ollama model. Scanner and manual reviews need no AI API key.
 
 The project is an engineering case study. A finding is a lead for a developer
 to investigate. “No findings” does not mean the code is secure. A failed or
@@ -20,7 +20,7 @@ incomplete scan must not be shown as clean.
 | Scanners | Isolated Semgrep, Trivy, and TruffleHog scan bounded source. Trivy also checks referenced Docker base images; it does not scan the final built image. |
 | Results | Supabase stores scans and findings. New records identify scanner versus AI origin and review mode; historical records with uncertain provenance are marked unknown. The dashboard separates code/dependency findings from Docker image advisories. Its Docker total and detail list use each repository's last completed PR scan, so repeated PR scans do not multiply the workspace total. A failed newer scan leaves the previous result visible, which may be stale. Older scan findings remain in history. |
 | Manual AI review | A separate signed-in window exchanges structured JSON with a chat model, supports bounded repository file tools, and stores its review steps. |
-| Automated AI | An opt-in OpenAI context engine exists behind configuration and repository flags. It has mocked tests but has not been verified with a live API key. |
+| Automated AI | An opt-in context engine supports OpenAI, Groq, and local Ollama through one bounded review loop. Provider paths have mocked tests; live provider behavior remains unverified. |
 | Related code | The isolated scanner maps direct Python imports and relative JavaScript/TypeScript imports at the PR commit. The review prompt uses a bounded batch of changed files, then graph neighbors, then heuristic matches. Unsupported languages and unavailable graph hints use heuristic selection. |
 | Failure handling | Scanner failures and incomplete source remain failed. Manual review cannot turn a failed scan into a passed scan. |
 
@@ -31,9 +31,10 @@ automated AI citations against the PR commit and the files supplied to the
 reviewer. Stage 3 persists per-file coverage outcomes and cited locations with
 the review transition. Stage 4 implements bounded graph-guided context
 selection. A checked citation confirms a location, not a vulnerability.
-Coverage is stored but is not yet shown on the dashboard. Optional free or
-local model providers, resumable AI jobs, dashboard changes, and a measured
-benchmark remain planned. Stage 3 live coverage verification remains pending.
+Coverage is stored but is not yet shown on the dashboard. Stage 3 live coverage
+verification is complete for the documented cases. Stage 5 adds opt-in Groq
+and local Ollama adapters; live provider verification remains. Resumable AI
+jobs, dashboard changes, and a measured benchmark remain planned.
 
 Apply `supabase/migrations/202611060002_coverage_ledger.sql` after
 `202611060001_review_contracts.sql` and before rebuilding the current backend

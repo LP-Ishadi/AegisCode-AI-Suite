@@ -100,7 +100,7 @@ containers/network. No hosted Supabase data is deleted. Jobs interrupted during
 shutdown recover after their five-minute leases expire when a worker resumes.
 
 **Enable scanning:** follow [Live scan pipeline setup](live-scan-pipeline.md) to apply
-the adapter migration, configure the GitHub App private key/OpenAI credentials, and
+the adapter migration, configure the GitHub App private key and optional selected AI provider, and
 explicitly opt in repositories. Unconfigured adapters fail with a diagnostic code.
 This is a local development setup; Vite and the Ngrok tunnel are not production hosting.
 

@@ -49,7 +49,7 @@ flowchart LR
     X --> D[Supabase scan and findings]
     S --> C[Bounded PR diff and related files]
     D --> C
-    C --> M[Manual review or opt-in OpenAI context engine]
+    C --> M[Manual review or opt-in provider context engine]
     M --> D
     D --> U[Dashboard]
 ```
@@ -58,8 +58,8 @@ flowchart LR
 The manual interface can exchange structured JSON with an external chat and
 persist its steps. The opt-in automated context engine uses a bounded diff,
 scanner summary, selected related files, and read-only repository tools. It has
-a five-model-step limit and one required successful file read. Its OpenAI path
-has mocked tests but has not been validated with a live key. The current
+a five-model-step limit and one required successful file read. Its OpenAI,
+Groq, and Ollama paths have mocked tests but have not been validated live. The current
 dashboard separates code/dependency findings from referenced Docker image
 advisories. It does not yet show a coverage ledger or separate scanner findings
 from AI-proposed findings. Automated AI steps are not resumable.
@@ -162,10 +162,10 @@ are leads, not proof of reachability or complete data flow.
 
 ## Provider and job design
 
-Keep scanner-only and manual modes usable with no API key. Add a provider
-interface for automated review: Groq as an optional free-tier endpoint and
-local Ollama as an optional fallback. Keep the existing OpenAI adapter isolated
-and disabled by default for the zero-paid-service setup. Validate structured
+Keep scanner-only and manual modes usable with no API key. The automated
+provider interface supports OpenAI, an optional Groq endpoint, and a local
+Ollama server. Automated review remains disabled unless both the global and
+repository settings opt in. Validate structured
 responses in application code because provider JSON support and model behavior
 vary. Rate limits and unavailable models mark AI work unavailable or partial;
 they never create an empty “clean” AI result.
@@ -249,11 +249,11 @@ backend and worker.
    `auto_context.included` paths rather than treating graph status as coverage.
 
 5. **Review modes and providers.** Share prompts, tool rules, validation, and
-   storage among scanner-only, manual, and automated modes. Add Groq and local
-   Ollama behind opt-in settings, with no required key. Test rate-limit,
+   storage among scanner-only, manual, and automated modes. Groq and local
+   Ollama are behind opt-in settings, with no key needed for local mode. Test rate-limit,
    malformed JSON, unavailable provider, and prompt-injection cases using
-   mocked clients. Live provider testing requires an operator-supplied key or
-   local model.
+   mocked clients. Provider adapters are implemented and mocked tests pass;
+   live provider testing still requires an operator-supplied key or local model.
 6. **Resumable AI orchestration.** Split long AI review from the scan lease.
    Test crash/retry, stale lease, changed PR commit, duplicate webhook, and
    exhausted budgets. Preserve the original scanner outcome.
@@ -424,8 +424,7 @@ backend contract and persistence are defined.
 - Existing Supabase project credentials and GitHub App configuration for
   webhook-driven scans. Keep private keys in the root `.env`; never paste them
   into an issue, chat, or benchmark.
-- For Groq automated mode only: a free-tier Groq account and API key, after
-  the provider is implemented. For local Ollama mode only: a running local
+- For Groq automated mode only: a Groq account and API key. For local Ollama mode only: a running local
   model with adequate hardware. Neither is required for scanners or manual
   review.
 - For a persistent public demo: a chosen hosting environment that can run
