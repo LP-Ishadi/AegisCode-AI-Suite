@@ -225,9 +225,9 @@ backend and worker.
    hint, not proof that a code path executes. Graph unavailability does not
    change scanner results. Fixed fixtures compare graph and fallback choices.
    Apply `202611080001_scan_context_graph.sql` and rebuild scanner, worker,
-   and backend before testing on a new PR. Stage 3's live gate below remains
-   pending; do not call Stage 4 fully accepted until that gate and a new PR
-   graph record have been checked.
+   and backend before testing on a new PR. Stage 3's live gate below is
+   complete. A new PR graph record and its first manual-review prompt were
+   checked on PR #13.
 
    For the live check, open a new PR that changes a Python or relative
    JavaScript/TypeScript module imported by another file. After its scan
@@ -276,13 +276,13 @@ backend and worker.
    advertising a persistent public demo. Until then, describe the app as
    locally runnable and demoable when the operator's machine is online.
 
-### Stage 3 live verification gate — pending
+### Stage 3 live verification gate — complete
 
-Run this **before calling Stage 4 complete**. The backend and database tests
-cover ledger transitions, but the new PR screenshot so far shows only that
-`snapshot_acquired` rows were saved. It does not verify all outcomes.
+These checks were completed before calling Stage 4 complete. Backend and
+database tests cover ledger transitions; the live checks below verify saved
+outcomes on actual PR scans.
 
-1. On PR #11's scan, if it completed after the coverage migration, compare
+1. On PR #18's scan, if it completed after the coverage migration, compare
    the scanner coverage `commit_sha` with the scan's `commit_sha`. Check that
    `selected_count` and `supplied_count` in
    `review_coverage.summary` equal the number of `scanner_only` file rows with
@@ -299,6 +299,121 @@ cover ledger transitions, but the new PR screenshot so far shows only that
 
 Record the PR numbers, scan IDs, outcomes, and date here when checked. Do not
 mark this gate complete based only on a screenshot of the first 30 file rows.
+
+#### Read-only SQL for the live gate
+
+Run these in the Supabase SQL Editor. They only read records; they do not change
+scan results. PR #18 is the safe review test. If its manual review has not yet
+accepted the final JSON response, finish that review first. Use the GitHub PR
+number, not the dashboard's total PR count.
+
+1. Check the scanner snapshot for PR #18. The two commit columns must match,
+   `coverage_status` must be `complete`, and the three counts must agree. This
+   verifies that the snapshot was acquired, not that the AI read every file.
+
+   ```sql
+   select p.number, s.id as scan_id, s.status as scan_status,
+          s.commit_sha as scan_commit, c.commit_sha as coverage_commit,
+          c.status as coverage_status,
+          (c.summary->>'selected_count')::integer as selected_count,
+          (c.summary->>'supplied_count')::integer as supplied_count,
+          (select count(*) from public.review_coverage_files f
+           where f.scan_id = s.id and f.review_mode = 'scanner_only'
+             and f.outcome = 'snapshot_acquired') as snapshot_files
+   from public.pull_requests p
+   join public.repositories r on r.id = p.repository_id
+   join public.scans s on s.id = p.latest_scan_id
+   left join public.review_coverage c on c.scan_id = s.id
+     and c.review_mode = 'scanner_only'
+   where r.full_name = 'LP-Ishadi/AegisCode-AI-Suite' and p.number = 18;
+   ```
+
+2. Check the manual review for PR #18. The manual coverage row must use the
+   same commit; after a completed review it must say `complete`. The requested
+   `manual_reviews.py` must have a `read_file` outcome. Other supplied files
+   may say `supplied_context`; omitted files, if any, must have a reason. An
+   empty list of omitted files is valid.
+
+   ```sql
+   select p.number, s.id as scan_id, s.commit_sha as scan_commit,
+          c.commit_sha as coverage_commit, c.status as coverage_status,
+          c.summary->>'read_count' as read_count,
+          f.file_path, f.outcome, f.reason
+   from public.pull_requests p
+   join public.repositories r on r.id = p.repository_id
+   join public.scans s on s.id = p.latest_scan_id
+   left join public.review_coverage c on c.scan_id = s.id
+     and c.review_mode = 'manual'
+   left join public.review_coverage_files f on f.scan_id = s.id
+     and f.review_mode = 'manual'
+   where r.full_name = 'LP-Ishadi/AegisCode-AI-Suite' and p.number = 18
+   order by f.file_path;
+   ```
+
+   PR #18 has no AI findings, so it cannot check citation storage. For a review
+   that saved an AI finding, use its GitHub PR number in this query (PR #16 was
+   the permission-bypass test). Each citation commit must match the scan.
+
+   ```sql
+   select p.number, s.commit_sha as scan_commit,
+          e.commit_sha as citation_commit, e.file_path, e.line, e.source
+   from public.pull_requests p
+   join public.repositories r on r.id = p.repository_id
+   join public.scans s on s.id = p.latest_scan_id
+   join public.findings f on f.scan_id = s.id and f.origin = 'ai'
+   join public.finding_evidence e on e.finding_id = f.id
+   where r.full_name = 'LP-Ishadi/AegisCode-AI-Suite' and p.number = 16
+   order by e.file_path, e.line;
+   ```
+
+3. Find a failed scan created after the coverage migration. A completed manual
+   review on that scan must leave both `pr_status` and `scan_status` as `failed`,
+   with scanner coverage `failed`. This query shows the latest candidates. If
+   it returns no completed manual review, create a fresh, unmerged test PR that
+   adds `.semgrepignore` containing `**/*`, wait for its scan to fail, then
+   finish a manual review with no findings. Run this query again.
+
+   ```sql
+   select p.number, p.status as pr_status, s.id as scan_id,
+          s.status as scan_status, s.error_code,
+          c.status as scanner_coverage_status,
+          c.summary->>'reason' as coverage_reason,
+          m.status as manual_review_status
+   from public.pull_requests p
+   join public.repositories r on r.id = p.repository_id
+   join public.scans s on s.id = p.latest_scan_id
+   join public.review_coverage c on c.scan_id = s.id
+     and c.review_mode = 'scanner_only'
+   left join public.manual_reviews m on m.scan_id = s.id
+   where r.full_name = 'LP-Ishadi/AegisCode-AI-Suite'
+     and s.status = 'failed'
+   order by s.created_at desc
+   limit 10;
+   ```
+
+Verification log (2026-11-08): local coverage, contract, manual review, and
+evidence tests passed (38 tests and 4 subtests). PR #13 previously showed
+matching scanner counts of 125 in a screenshot. PR #18's AI requested
+`manual_reviews.py` and returned no findings, as expected for its safe change;
+its completed manual coverage confirms the final response was submitted. The
+live PR #18 scanner query returned scan
+`51a49e21-2640-4583-9d00-12b476dad394` with matching
+scan/coverage commits, `complete` scanner coverage, and selected/supplied/
+snapshot counts of 126/126/126. This verifies gate item 1 for that scan.
+The same PR #18 scan has `complete` manual coverage at the matching commit:
+`read_count` is 1, `backend/app/api/manual_reviews.py` is `read_file`, and four
+other files are `supplied_context`. No omitted paths were recorded, so no
+omission reason needs checking for this scan. This verifies gate item 2's
+file-coverage outcomes. PR #16 has four saved AI citations; all four citation
+commits match that scan's commit (`cc0597a478a27d6aedc870e6f28de9dadbe25c75`).
+This verifies commit pinning for saved citations, not whether each cited line
+supports the claim. The previously observed inaccurate PR #16 line references
+remain a separate quality finding. An initial failed-scan query returned zero
+eligible rows. A fresh unmerged PR #19 then produced `source_incomplete`; after
+an empty manual review completed, its PR and scan statuses remained `failed`,
+and scanner coverage remained `failed` with reason `source_incomplete`. This
+verifies gate item 3 for that failure case. The captured PR #19 query did not
+include its scan ID. Stage 3's live gate is **complete** for these tested cases.
 
 Each stage is complete only when its meaningful tests and documentation are
 updated. Do not introduce a new status or provider in the UI before its

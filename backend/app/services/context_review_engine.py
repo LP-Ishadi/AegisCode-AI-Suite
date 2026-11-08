@@ -16,6 +16,7 @@ from app.services.manual_review import (
     checked_findings,
     prepared_prompt,
     prompt,
+    record_file_read,
     require_context_for_clean,
     require_file_read,
 )
@@ -106,12 +107,10 @@ class ContextReviewEngine:
                         # Unsupported files are not counted as reviewed evidence.
                         result = {"error": "unsupported_file_or_tree", "path": reply.tool.path}
                     if reply.tool.name == "read_file" and "content" in result:
-                        file_read_completed = True
-                        paths = evidence_scope["read_file_paths"]
-                        if reply.tool.path not in paths:
-                            paths.append(reply.tool.path)
-                        if reply.tool.path in pending:
-                            pending.remove(reply.tool.path)
+                        file_read_completed = (
+                            record_file_read(evidence_scope, pending, result)
+                            or file_read_completed
+                        )
                     next_request = prompt(
                         metadata,
                         "",

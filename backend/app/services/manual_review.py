@@ -24,6 +24,7 @@ from app.services.redaction import redact
 from app.services.review_evidence import scanner_evidence as summarize_scanner_evidence
 
 MAX_FILE_CHARS = 16_000
+MAX_SOURCE_BYTES = 512_000
 MAX_TREE_FILES = 2_000
 MAX_AUTO_CONTEXT_CHARS = 64_000
 MAX_AUTO_FILES = 8
@@ -45,14 +46,15 @@ SPECIAL_NAMES = {
 class ToolCall(StrictModel):
     name: str = Field(pattern=r"^(list_files|list_special_files|read_file)$")
     path: str | None = Field(default=None, max_length=1024)
+    start_line: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def valid_path(self):
         if self.name == "read_file":
             if not self.path or not safe_path(self.path):
                 raise ValueError("read_file needs a safe repository path")
-        elif self.path is not None:
-            raise ValueError("This tool takes no path")
+        elif self.path is not None or self.start_line is not None:
+            raise ValueError("This tool takes no arguments")
         return self
 
 
@@ -96,9 +98,11 @@ def require_file_read(completed: bool) -> None:
         raise ValueError("Call read_file on at least one repository file before a final review")
 
 
-def numbered_content(content: str) -> str:
+def numbered_content(content: str, start_line: int = 1) -> str:
     """Display the exact one-based line numbers used by evidence validation."""
-    return "\n".join(f"{number}: {line}" for number, line in enumerate(content.splitlines(), 1))
+    return "\n".join(
+        f"{number}: {line}" for number, line in enumerate(content.splitlines(), start_line)
+    )
 
 
 def display_file_content(data: dict | None) -> dict | None:
@@ -106,7 +110,9 @@ def display_file_content(data: dict | None) -> dict | None:
         return data
     displayed = data.copy()
     if isinstance(displayed.get("content"), str):
-        displayed["content"] = numbered_content(displayed["content"])
+        displayed["content"] = numbered_content(
+            displayed["content"], displayed.get("start_line", 1)
+        )
         displayed["content_format"] = "One-based line number followed by source text"
     if isinstance(displayed.get("included"), list):
         displayed["included"] = [display_file_content(item) for item in displayed["included"]]
@@ -144,6 +150,9 @@ def prompt(
         (evidence_scope or {}).get("diff_lines", {})
     )
     next_action = (
+        {"kind": "tool", "tool": {"name": "read_file", "path": tool_result["path"],
+                                   "start_line": tool_result["next_start_line"]}}
+        if tool_result and tool_result.get("next_start_line") else
         {"kind": "tool", "tool": {"name": "read_file", "path": suggested_paths[0]}}
         if not file_read_completed and suggested_paths else
         {"kind": "tool", "tool": {"name": "list_files"}}
@@ -162,6 +171,9 @@ def prompt(
             "reviewed; request any needed file with read_file before concluding. "
             "You must request read_file for at least one repository file before any final "
             "answer, even if the supplied context appears sufficient. "
+            "Large text files arrive in numbered chunks. If next_start_line is present, "
+            "request read_file on the same path with start_line set to that value. "
+            "A partial chunk does not complete coverage of a changed file. "
             "Use scanner findings as leads; trace relevant changed code through callers, "
             "permission checks, dependencies, and configuration before concluding. "
             "An empty final answer is not accepted while changed files remain in "
@@ -237,8 +249,9 @@ def prompt(
             },
             {
                 "name": "read_file",
-                "arguments": {"path": "repository-relative path"},
-                "purpose": "Read a bounded file at the PR commit",
+                "arguments": {"path": "repository-relative path",
+                              "start_line": "optional 1-based line number"},
+                "purpose": "Read one bounded, numbered chunk at the PR commit",
             },
         ],
         "output_schema": reply_schema(bool((evidence_scope or {}).get("require_line_excerpt"))),
@@ -261,7 +274,7 @@ class RepositoryTools:
         self.api = GitHubAPI(get_settings())
         self.token = None
         self.paths = None
-        self.file_cache: dict[str, dict] = {}
+        self.file_cache: dict[str, str] = {}
 
     async def ready(self):
         self.token = await self.api.installation_token(self.metadata)
@@ -287,7 +300,7 @@ class RepositoryTools:
             )
         return self.paths
 
-    async def read_file(self, path: str) -> dict:
+    async def source_text(self, path: str) -> str:
         if not safe_path(path):
             raise ValueError("Invalid repository path")
         if path in self.file_cache:
@@ -304,7 +317,7 @@ class RepositoryTools:
             data.get("type") != "file"
             or data.get("encoding") != "base64"
             or not isinstance(size, int)
-            or size > MAX_FILE_CHARS
+            or size > MAX_SOURCE_BYTES
             or not isinstance(encoded, str)
         ):
             raise ValueError("File is not a supported text file within the size limit")
@@ -314,12 +327,38 @@ class RepositoryTools:
             raise ValueError("GitHub returned invalid file content") from exc
         if len(raw) != size:
             raise ValueError("GitHub returned incomplete file content")
-        content = raw.decode("utf-8")
-        if len(content) > MAX_FILE_CHARS or "\x00" in content:
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("File is not UTF-8 text") from exc
+        if "\x00" in content:
             raise ValueError("File is not supported text within the size limit")
-        result = {"path": path, "commit": self.metadata.commit_sha, "content": redact(content)}
-        self.file_cache[path] = result
-        return result
+        self.file_cache[path] = redact(content)
+        return self.file_cache[path]
+
+    async def read_file(self, path: str, start_line: int = 1) -> dict:
+        content = await self.source_text(path)
+        lines = content.splitlines(keepends=True)
+        if start_line < 1 or start_line > max(1, len(lines)):
+            raise ValueError("start_line is outside the file")
+        chunk = []
+        length = 0
+        for line in lines[start_line - 1:]:
+            if len(line) > MAX_FILE_CHARS:
+                raise ValueError("A source line exceeds the read_file chunk limit")
+            if length + len(line) > MAX_FILE_CHARS:
+                break
+            chunk.append(line)
+            length += len(line)
+        end_line = start_line + len(chunk) - 1
+        complete = end_line >= len(lines)
+        return {
+            "path": path, "commit": self.metadata.commit_sha,
+            "content": "".join(chunk), "start_line": start_line,
+            "end_line": end_line, "total_lines": len(lines),
+            "complete": complete,
+            "next_start_line": None if complete else end_line + 1,
+        }
 
     async def execute(self, call: ToolCall) -> dict:
         paths = await self.list_files()
@@ -333,7 +372,36 @@ class RepositoryTools:
                     if p.split("/")[-1] in SPECIAL_NAMES or p.startswith(".github/workflows/")
                 ]
             }
-        return await self.read_file(call.path)
+        return await self.read_file(call.path, call.start_line or 1)
+
+
+def record_file_read(
+    scope: dict | None, pending: list[str], result: dict
+) -> bool:
+    """Record only lines actually supplied; a whole-file read clears pending."""
+    if "content" not in result:
+        return False
+    if scope is None:
+        return True
+    path = result["path"]
+    start = result.get("start_line", 1)
+    end = result.get("end_line", len(result["content"].splitlines()))
+    ranges = scope.setdefault("read_file_ranges", {}).setdefault(path, [])
+    if end >= start and [start, end] not in ranges:
+        ranges.append([start, end])
+    total = result.get("total_lines", end)
+    position = 1
+    for left, right in sorted(ranges):
+        if left > position:
+            break
+        position = max(position, right + 1)
+    if (result.get("complete", True) and start == 1) or position > total:
+        paths = scope.setdefault("read_file_paths", [])
+        if path not in paths:
+            paths.append(path)
+        if path in pending:
+            pending.remove(path)
+    return True
 
 
 def related_paths(changed: list[str], paths: list[str], contents: list[str]) -> list[str]:
@@ -394,6 +462,9 @@ async def automatic_context(
         except (ValueError, UnicodeError):
             omitted.append({"path": path, "reason": "unsupported_or_large"})
             continue
+        if not file.get("complete", True):
+            omitted.append({"path": path, "reason": "requires_chunked_read"})
+            continue
         size = len(file["content"])
         if total_chars + size > MAX_AUTO_CONTEXT_CHARS:
             omitted.append({"path": path, "reason": "context_limit"})
@@ -413,6 +484,9 @@ async def automatic_context(
             file = await tools.read_file(path)
         except (ValueError, UnicodeError):
             omitted.append({"path": path, "reason": "unsupported_or_large"})
+            continue
+        if not file.get("complete", True):
+            omitted.append({"path": path, "reason": "requires_chunked_read"})
             continue
         size = len(file["content"])
         if total_chars + size > MAX_AUTO_CONTEXT_CHARS:
@@ -481,6 +555,7 @@ async def prepared_prompt(
             "diff_lines": source.line_ranges,
             "auto_context_paths": [item["path"] for item in context["included"]],
             "read_file_paths": [],
+            "read_file_ranges": {},
         },
         coverage_context={
             "omitted": context["omitted"],
@@ -539,19 +614,28 @@ async def checked_findings(
             elif ref.source == "auto_context":
                 supplied = ref.file_path in evidence_scope.get("auto_context_paths", [])
             elif ref.source == "read_file":
-                supplied = ref.file_path in evidence_scope.get("read_file_paths", [])
+                supplied = (
+                    ref.file_path in evidence_scope.get("read_file_paths", [])
+                    or any(start <= ref.line <= end for start, end in
+                           evidence_scope.get("read_file_ranges", {}).get(ref.file_path, []))
+                )
             else:
                 raise ValueError("Evidence source is not supported")
             if not supplied:
                 raise ValueError("Evidence location was not supplied to the AI")
-            file = await tools.read_file(ref.file_path)
-            if file.get("commit") != metadata.commit_sha or file.get("path") != ref.file_path:
-                raise ValueError("Evidence file does not match the review commit")
-            if ref.line > len(file["content"].splitlines()):
+            if hasattr(tools, "source_text"):
+                source_text = await tools.source_text(ref.file_path)
+            else:
+                file = await tools.read_file(ref.file_path)
+                if file.get("commit") != metadata.commit_sha or file.get("path") != ref.file_path:
+                    raise ValueError("Evidence file does not match the review commit")
+                source_text = file["content"]
+            lines = source_text.splitlines()
+            if ref.line > len(lines):
                 raise ValueError("Evidence line is outside the file")
             if evidence_scope.get("require_line_excerpt"):
                 excerpt = (ref.line_excerpt or "").strip()
-                source_line = file["content"].splitlines()[ref.line - 1]
+                source_line = lines[ref.line - 1]
                 if not excerpt or excerpt not in source_line:
                     raise ValueError(
                         f"Evidence {ref.file_path}:{ref.line} does not match its line_excerpt "
